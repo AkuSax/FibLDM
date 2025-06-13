@@ -27,7 +27,6 @@ DDPM-v2/
 ├── dataset.py            # ContourDataset wrapper
 ├── utils.py              # save_images, helper I/O
 ├── trained_models/       # periodic ckpts (.pt)
-├── requirements.txt      # Python deps
 └── README.md             # <— you are here
 ```
 
