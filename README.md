@@ -1,4 +1,4 @@
-# DDPM‑v2 – Multi‑GPU Diffusion for Contour Segmentation
+# DDPM‑v2 – Diffusion for Contour Segmentation
 
 ---
 
