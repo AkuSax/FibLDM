@@ -33,54 +33,7 @@ DDPM-v2/
 
 ---
 
-## Quick start
-
-### 1 · Install
-
-```bash
-conda create -n contourdiff python=3.10
-conda activate contourdiff
-pip install -r requirements.txt
-```
-
-### 2 · Prepare data
-
-```
-/hot/Yi-Kuan/Fibrosis/
- ├─ images/       *.png or *.tif
- └─ label.csv     # two‑column: id, mask‑path
-```
-
-Adapt `dataset.py` if your CSV layout differs.
-
-### 3 · Single‑GPU smoke test
-
-```bash
-python main.py \
-  --device cuda:0 \
-  --batch_size 8 \
-  --epochs 1
-```
-
-### 4 · Multi‑GPU training (2× A6000)
-
-```bash
-torchrun --nproc_per_node=2 \
-         --rdzv_backend=c10d --rdzv_endpoint=localhost:29500 \
-         main.py \
-           --batch_size 16 \
-           --epochs 1000 \
-           --data_dir /scratch/$USER/fibrosis_data \
-           --save_dir  ./runs
-```
-
-*Effective* global batch = `nproc × --batch_size`.
-
-Checkpoint files drop into `trained_models/` every 30 epochs; the best EMA model lands in `best_ddpm_model.pth`.
-
----
-
-## Key files & APIs
+## Key files
 
 | File                | What it does                                                                                                                                                     |
 | ------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -90,35 +43,3 @@ Checkpoint files drop into `trained_models/` every 30 epochs; the best EMA model
 | **dataset.py**      | Minimal `__getitem__` → `(image_tensor, contour_tensor)`.  Extend here for multi‑class masks.                                                                    |
 
 ---
-
-## Road‑map / TODO
-
-1. **Loss stack upgrade**
-   - ✓ noise‑MSE  •  □ Dice  •  □ Boundary / Hausdorff  •  □ GAN adversarial
-2. **Architecture variants**\
-   □ Swin‑UNet  •  □ Mask2Former head  •  □ Diffusion transformer encoder
-3. **Inference CLI / notebook**
-4. **GitHub Actions** for linting + small data CI
-5. **Weights & Biases logging** (optional)
-
----
-
-## Citing
-
-If you build on DDPM‑v2 for academic work, please cite:
-
-```
-@software{ddpm_v2_2025,
-  author    = {Akul Saxena et al.},
-  title     = {DDPM‑v2: Mixed‑precision, multi‑GPU diffusion for contour segmentation},
-  year      = {2025},
-  url       = {https://github.com/AkuSax/DDPM-v2}
-}
-```
-
----
-
-## License
-
-This project is released under the **MIT License** (see `LICENSE`).  Models trained on proprietary data remain the property of their respective owners.
-
