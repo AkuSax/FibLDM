@@ -1,0 +1,14 @@
+__pycache__/
+*.py[cod]
+*.ipynb_checkpoints
+see_results.ipynb
+.env/
+*.pth
+*.pt
+*.ckpt
+trained_models/
+ema_samples.png
+/hot/
+/scratch/
+.vscode/
+.idea/
