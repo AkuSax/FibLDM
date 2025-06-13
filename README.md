@@ -2,7 +2,7 @@
 
 ---
 
-**DDPM‑v2** is a research‑grade PyTorch implementation of a Denoising Diffusion Probabilistic Model (DDPM) tailored for pixel‑wise contour/segmentation tasks.  The codebase features:
+**DDPM‑v2** is a PyTorch implementation of a Denoising Diffusion Probabilistic Model (DDPM) tailored for pixel‑wise contour/segmentation tasks.  The codebase features:
 
 - **Cosine β‑schedule** (Nichol & Dhariwal, 2021) for smoother noise variance.
 - **Exponential Moving Average (EMA)** of model weights for robust sampling.
