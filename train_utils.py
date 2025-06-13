@@ -1,9 +1,13 @@
+# ddpm/train_utils.py
+
 import torch
 import torch.nn as nn
 import math
 import os
 from tqdm import tqdm
 from torch.amp import autocast, GradScaler
+from ddpm.losses import LOSS_REGISTRY
+
 
 class EMA:
     """
@@ -11,13 +15,20 @@ class EMA:
     """
     def __init__(self, model: torch.nn.Module, decay: float = 0.9999):
         self.decay = decay
-        self.shadow = {name: param.detach().clone() for name, param in model.named_parameters() if param.requires_grad}
+        self.shadow = {
+            name: param.detach().clone()
+            for name, param in model.named_parameters()
+            if param.requires_grad
+        }
         self.backup = {}
 
     def update(self, model: torch.nn.Module):
         for name, param in model.named_parameters():
             if param.requires_grad:
-                self.shadow[name] = self.decay * self.shadow[name] + (1.0 - self.decay) * param.detach()
+                self.shadow[name] = (
+                    self.decay * self.shadow[name]
+                    + (1.0 - self.decay) * param.detach()
+                )
 
     def apply_shadow(self, model: torch.nn.Module):
         self.backup = {}
@@ -64,7 +75,11 @@ def cosine_beta_schedule(timesteps: int, s: float = 0.008) -> torch.FloatTensor:
     return torch.clamp(betas, 0.0, 0.999)
 
 
-def evaluate_iou(model: torch.nn.Module, dataloader: torch.utils.data.DataLoader, device: torch.device) -> float:
+def evaluate_iou(
+    model: torch.nn.Module,
+    dataloader: torch.utils.data.DataLoader,
+    device: torch.device
+) -> float:
     model.eval()
     ious = []
     with torch.no_grad():
@@ -76,9 +91,8 @@ def evaluate_iou(model: torch.nn.Module, dataloader: torch.utils.data.DataLoader
             preds = (logits > 0.5).float()
             inter = (preds * masks).sum(dim=[1,2,3])
             union = ((preds + masks) >= 1).float().sum(dim=[1,2,3])
-            ious.append((inter / (union + 1e-6)).mean().item()) 
+            ious.append((inter / (union + 1e-6)).mean().item())
     return sum(ious) / len(ious)
-
 
 
 def train(
@@ -88,68 +102,81 @@ def train(
     val_loader: torch.utils.data.DataLoader,
     optimizer: torch.optim.Optimizer,
     device: torch.device,
-    num_epochs: int = 100,
-    ema_decay: float = 0.9999,
-    early_stop_patience: int = 10,
-    sample_batch_size: int = 16,
-    save_interval: int = 30,
-    use_amp: bool = True,
-    use_compile: bool = True
+    args,
+    discriminator: torch.nn.Module | None = None
 ):
+    """
+    Training loop that accumulates multiple losses specified in args.losses,
+    each weighted by args.lambda_<lossname>. Supports 'adv' term if
+    discriminator is passed.
+    """
     torch.backends.cudnn.benchmark = True
-    if use_compile and hasattr(torch, "compile"):
+    if args.use_compile and hasattr(torch, "compile"):
         model = torch.compile(model, backend="inductor")
-    
-    
-    ema = EMA(model, decay=ema_decay)
-    stopper = EarlyStopper(patience=early_stop_patience)
+
+    ema = EMA(model, decay=args.ema_decay)
+    stopper = EarlyStopper(patience=args.early_stop_patience)
     scaler = GradScaler("cuda")
-    loss_fn = nn.MSELoss()
 
     model.to(device)
     best_iou = 0.0
 
-    for epoch in range(num_epochs):
-        
+    for epoch in range(args.num_epochs):
         model.train()
         running_loss = 0.0
 
         for images, contour in tqdm(train_loader, desc=f"Epoch {epoch}"):
-            # move to GPU with non_blocking
-            images = images.to(device,   non_blocking=True)
-            contour = contour.to(device,  non_blocking=True)
-            # sample noise
+            images = images.to(device, non_blocking=True)
+            contour = contour.to(device, non_blocking=True)
+
+            # Sample noise and prepare input
             t = diffusion.sample_timesteps(images.size(0)).to(device)
             x_t, noise = diffusion.noise_image(images, t)
-            # prep network input
             x_in = torch.cat((x_t, contour), dim=1)
-            # AMP‐wrapped forward/backward
+
             optimizer.zero_grad()
-            if use_amp:
+
+            # Forward (with optional AMP)
+            if args.use_amp:
                 with autocast("cuda", dtype=torch.float16):
                     pred_noise = model(x_in, t)
-                    loss = loss_fn(pred_noise, noise)
-                scaler.scale(loss).backward()
+            else:
+                pred_noise = model(x_in, t)
+
+            # Compute weighted sum of requested losses
+            total_loss = torch.tensor(0.0, device=device)
+            for name in args.losses:
+                if name == "adv":
+                    if discriminator is None:
+                        raise RuntimeError("--losses adv requires a discriminator")
+                    disc_pred = discriminator(pred_noise)
+                    l = LOSS_REGISTRY[name](disc_pred)
+                else:
+                    l = LOSS_REGISTRY[name](pred_noise, noise)
+                total_loss = total_loss + getattr(args, f"lambda_{name}") * l
+
+            # Backward & optimizer step
+            if args.use_amp:
+                scaler.scale(total_loss).backward()
                 scaler.step(optimizer)
                 scaler.update()
             else:
-                pred_noise = model(x_in, t)
-                loss = loss_fn(pred_noise, noise)
-                loss.backward()
+                total_loss.backward()
                 optimizer.step()
 
-            # EMA update & bookkeeping
+            running_loss += total_loss.item()
+
+            # EMA update
             ema.update(model)
-            running_loss += loss.item()
 
         avg_loss = running_loss / len(train_loader)
-        print(f"Epoch {epoch} | Train MSE: {avg_loss:.6f}")
+        print(f"Epoch {epoch} | Train loss: {avg_loss:.6f}")
 
-        # Validation IoU (every epoch)
+        # Validation
         current_iou = evaluate_iou(model, val_loader, device)
         print(f"Epoch {epoch} | Val IoU: {current_iou:.4f}  (best: {best_iou:.4f})")
 
-        # Save best (EMA shadow) model
+        # Save best model
         if current_iou > best_iou:
             best_iou = current_iou
             torch.save({
@@ -166,14 +193,16 @@ def train(
             print("Early stopping criterion met; halting training.")
             break
 
-        # Periodic checkpoints
-        if epoch % save_interval == 0:
-            ckpt_path = os.path.join("trained_models", f"ddpmv2_model_{epoch:03d}.pt")
+        # Periodic checkpoint
+        if epoch % args.save_interval == 0:
+            ckpt_path = os.path.join(
+                "trained_models", f"ddpmv2_model_{epoch:03d}.pt"
+            )
             torch.save({
                 "model_state":     model.state_dict(),
                 "optimizer_state": optimizer.state_dict(),
                 "epoch":           epoch,
-                "mse":             avg_loss,
+                "loss":            avg_loss,
                 "iou":             current_iou
             }, ckpt_path)
             print(f"Saved checkpoint to {ckpt_path}")
@@ -182,10 +211,8 @@ def train(
     print("Loading EMA weights for sampling…")
     ema.apply_shadow(model)
     model.eval()
-
-    # Get a batch of contours
-    sample_contour = next(iter(val_loader))[1][:sample_batch_size].to(device)
-    samples = diffusion.sample(model, sample_batch_size, sample_contour)
-
+    sample_contour = next(iter(val_loader))[1][:args.sample_batch_size].to(device)
+    samples = diffusion.sample(model, args.sample_batch_size, sample_contour)
     ema.restore(model)
+
     return samples
