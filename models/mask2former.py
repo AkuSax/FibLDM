@@ -1,7 +1,6 @@
 import torch.nn as nn
 from transformers import Mask2FormerConfig, Mask2FormerForUniversalSegmentation
 
-
 class Mask2FormerWrapper(nn.Module):
     """Hugging Face Mask2Former, returned as a plain (B,C,H,W) tensor.
 

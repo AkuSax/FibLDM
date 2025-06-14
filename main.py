@@ -56,7 +56,7 @@ def train_proc(args):
     # Model + (optional) Discriminator
     model = get_model(
         args.arch,
-        img_size=args.img_size,
+        img_size=args.image_size,
         in_channels=args.in_channels,
         out_channels=args.out_channels,
         pretrained_ckpt = args.encoder_ckpt
@@ -144,7 +144,6 @@ def main():
     parser.add_argument("--epochs",      dest="num_epochs", type=int, default=1000)
     parser.add_argument("--arch",        type=str, default="unet2d",
                         choices=["unet2d", "swin_unet", "mask2former"])
-    parser.add_argument("--img_size", type=int,default=256)
     parser.add_argument("--encoder_ckpt",type=str, default=None)
     parser.add_argument("--save_interval",      type=int, default=30)
     parser.add_argument("--sample_batch_size",  type=int, default=16)

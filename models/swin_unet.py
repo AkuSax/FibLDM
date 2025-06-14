@@ -1,11 +1,10 @@
 import torch
 from torch import nn
-from monai.networks.nets import SwinUNETR
 
-GITHUB_CKPT = (
-    "https://github.com/Project-MONAI/MONAI/"
-    "releases/download/v1.3.0/monai_swin_unetr-589a67d7.pth"
-)
+# GITHUB_CKPT = (
+#     "https://github.com/Project-MONAI/MONAI/"
+#     "releases/download/v1.3.0/monai_swin_unetr-589a67d7.pth"
+# )
 
 class SwinUNetWrapper(nn.Module):
     def __init__(
