@@ -27,8 +27,6 @@ class SwinUNetWrapper(nn.Module):
             dropout_path_rate=0.0,
         )
 
-        
-
         if pretrained_ckpt:
             url = pretrained_ckpt or GITHUB_CKPT
             ckpt = torch.hub.load_state_dict_from_url(url, map_location="cpu", check_hash=False)
