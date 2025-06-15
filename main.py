@@ -40,7 +40,7 @@ def train_proc(args):
         sampler=train_sampler,
         num_workers=args.num_workers,
         pin_memory=True,
-        prefetch_factor=4,
+        prefetch_factor=8,
         persistent_workers=True
     )
     val_loader = DataLoader(
@@ -49,7 +49,7 @@ def train_proc(args):
         sampler=val_sampler,
         num_workers=args.num_workers,
         pin_memory=True,
-        prefetch_factor=4,
+        prefetch_factor=8,
         persistent_workers=True
     )
 
@@ -146,6 +146,8 @@ def main():
                         choices=["unet2d", "swin_unet", "mask2former"])
     parser.add_argument("--encoder_ckpt",type=str, default=None)
     parser.add_argument("--save_interval",      type=int, default=30)
+    parser.add_argument("--metrics_interval",   type=int, default=5,
+                        help="Interval in epochs to compute realism metrics")
     parser.add_argument("--sample_batch_size",  type=int, default=16)
     parser.add_argument("--ema_decay",          type=float, default=0.9999)
     parser.add_argument("--early_stop_patience",type=int,   default=10)
@@ -153,7 +155,7 @@ def main():
                         help="Enable mixed-precision training")
     parser.add_argument("--use_compile",        action="store_true",
                         help="Enable torch.compile() optimization")
-    parser.add_argument("--in_channels", type=int, default=1)
+    parser.add_argument("--in_channels", type=int, default=2)
     parser.add_argument("--out_channels",type=int, default=1)
     
     # Loss configuration

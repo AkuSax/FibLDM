@@ -104,3 +104,4 @@ class ContourDataset(Dataset):
             contour = (contour>0.2).float()
 
         return volume, contour
+    

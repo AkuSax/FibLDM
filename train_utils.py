@@ -7,6 +7,8 @@ import os
 from tqdm import tqdm
 from torch.amp import autocast, GradScaler
 from ddpm.losses import LOSS_REGISTRY
+from metrics import RealismMetrics
+import csv
 
 
 class EMA:
@@ -117,9 +119,17 @@ def train(
     ema = EMA(model, decay=args.ema_decay)
     stopper = EarlyStopper(patience=args.early_stop_patience)
     scaler = GradScaler("cuda")
+    metrics = RealismMetrics(device=device)
 
     model.to(device)
     best_iou = 0.0
+
+    # Setup CSV logging
+    metrics_csv = os.path.join(args.save_dir, 'metrics_log.csv')
+    if not os.path.exists(metrics_csv):
+        with open(metrics_csv, 'w', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow(['epoch', 'fid', 'kid', 'lpips', 'ssim', 'val_iou', 'train_loss'])
 
     for epoch in range(args.num_epochs):
         model.train()
@@ -140,20 +150,29 @@ def train(
             if args.use_amp:
                 with autocast("cuda", dtype=torch.float16):
                     pred_noise = model(x_in, t)
+                    # Compute weighted sum of requested losses
+                    total_loss = torch.tensor(0.0, device=device, dtype=pred_noise.dtype)
+                    for name in args.losses:
+                        if name == "adv":
+                            if discriminator is None:
+                                raise RuntimeError("--losses adv requires a discriminator")
+                            disc_pred = discriminator(pred_noise)
+                            l = LOSS_REGISTRY[name](disc_pred)
+                        else:
+                            l = LOSS_REGISTRY[name](pred_noise, noise)
+                        total_loss = total_loss + getattr(args, f"lambda_{name}") * l
             else:
                 pred_noise = model(x_in, t)
-
-            # Compute weighted sum of requested losses
-            total_loss = torch.tensor(0.0, device=device)
-            for name in args.losses:
-                if name == "adv":
-                    if discriminator is None:
-                        raise RuntimeError("--losses adv requires a discriminator")
-                    disc_pred = discriminator(pred_noise)
-                    l = LOSS_REGISTRY[name](disc_pred)
-                else:
-                    l = LOSS_REGISTRY[name](pred_noise, noise)
-                total_loss = total_loss + getattr(args, f"lambda_{name}") * l
+                total_loss = torch.tensor(0.0, device=device)
+                for name in args.losses:
+                    if name == "adv":
+                        if discriminator is None:
+                            raise RuntimeError("--losses adv requires a discriminator")
+                        disc_pred = discriminator(pred_noise)
+                        l = LOSS_REGISTRY[name](disc_pred)
+                    else:
+                        l = LOSS_REGISTRY[name](pred_noise, noise)
+                    total_loss = total_loss + getattr(args, f"lambda_{name}") * l
 
             # Backward & optimizer step
             if args.use_amp:
@@ -176,6 +195,55 @@ def train(
         current_iou = evaluate_iou(model, val_loader, device)
         print(f"Epoch {epoch} | Val IoU: {current_iou:.4f}  (best: {best_iou:.4f})")
 
+        # Compute realism metrics on validation set
+        metric_results = {}
+        if epoch % args.metrics_interval == 0:
+            metrics.reset()
+            model.eval()
+            with torch.no_grad():
+                # Accumulate all validation samples
+                all_val_images = []
+                all_val_contours = []
+                for images, contours in val_loader:
+                    all_val_images.append(images)
+                    all_val_contours.append(contours)
+                val_images = torch.cat(all_val_images, dim=0).to(device)
+                val_contours = torch.cat(all_val_contours, dim=0).to(device)
+                # Generate samples
+                samples = diffusion.sample(model, val_images.size(0), val_contours)
+                # Compute metrics
+                metric_results = metrics.compute_metrics(
+                    real_images=val_images,
+                    fake_images=samples,
+                    same_mask_images=val_images  # Using same images for LPIPS/SSIM
+                )
+                print(f"Epoch {epoch} | Metrics:")
+                for name, value in metric_results.items():
+                    print(f"  {name}: {value:.4f}")
+            model.train()
+
+        # Live CSV logging
+        with open(metrics_csv, 'a', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow([
+                epoch,
+                metric_results.get('fid', ''),
+                metric_results.get('kid', ''),
+                metric_results.get('lpips', ''),
+                metric_results.get('ssim', ''),
+                current_iou,
+                avg_loss
+            ])
+
+        # Console logging of all statistics
+        print(f"Epoch {epoch} | Statistics:")
+        print(f"  fid: {metric_results.get('fid', '')}")
+        print(f"  kid: {metric_results.get('kid', '')}")
+        print(f"  lpips: {metric_results.get('lpips', '')}")
+        print(f"  ssim: {metric_results.get('ssim', '')}")
+        print(f"  val_iou: {current_iou}")
+        print(f"  train_loss: {avg_loss}")
+
         # Save best model
         if current_iou > best_iou:
             best_iou = current_iou
@@ -184,7 +252,8 @@ def train(
                 "ema_state":       ema.shadow,
                 "optimizer_state": optimizer.state_dict(),
                 "epoch":           epoch,
-                "best_iou":        best_iou
+                "best_iou":        best_iou,
+                "metrics":         metric_results if epoch % args.metrics_interval == 0 else None
             }, "best_ddpm_model.pth")
             print("Saved new best model.")
 
@@ -203,7 +272,8 @@ def train(
                 "optimizer_state": optimizer.state_dict(),
                 "epoch":           epoch,
                 "loss":            avg_loss,
-                "iou":             current_iou
+                "iou":             current_iou,
+                "metrics":         metric_results if epoch % args.metrics_interval == 0 else None
             }, ckpt_path)
             print(f"Saved checkpoint to {ckpt_path}")
 

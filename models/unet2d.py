@@ -151,8 +151,9 @@ class UNet2D(nn.Module):
 
         self.outc = nn.Conv2d(64, out_channels, kernel_size=1)
 
-    def pos_encoding(self, t, channels): # Positional Encoding of the time dimension
-        inv_freq = 1. / (10000 ** (torch.arange(0, channels, 2).float() / channels)).to(self.device)
+    def pos_encoding(self, t, dim):
+        device = t.device
+        inv_freq = 1.0 / (10000 ** (torch.arange(0, dim, 2, device=device).float() / dim))
         pos_enc_a = torch.sin(t * inv_freq)
         pos_enc_b = torch.cos(t * inv_freq)
         pos_enc = torch.cat((pos_enc_a, pos_enc_b), dim=-1)
