@@ -6,11 +6,19 @@ from torchvision import transforms
 from torch.utils.data import DataLoader, Dataset
 import numpy as np
 from tqdm import tqdm
+import math
+
+class OutConv(nn.Module):
+    def __init__(self, in_channels, out_channels):
+        super().__init__()
+        self.conv = nn.Conv2d(in_channels, out_channels, kernel_size=1)
+
+    def forward(self, x):
+        return self.conv(x)
 
 class DoubleConv(nn.Module):
-    def __init__(self, in_channels, out_channels, mid_channels=None, residual=False):
+    def __init__(self, in_channels, out_channels, mid_channels=None):
         super().__init__()
-        self.residual = residual
         if not mid_channels:
             mid_channels = out_channels
         self.double_conv = nn.Sequential(
@@ -21,69 +29,59 @@ class DoubleConv(nn.Module):
             nn.BatchNorm2d(out_channels),
             nn.ReLU(inplace=True)
         )
+
     def forward(self, x):
-        if self.residual:
-            return x + self.double_conv(x)
-        else:
-            return self.double_conv(x)
+        return self.double_conv(x)
+
 class Down(nn.Module):
-    def __init__(self, in_channels, out_channels, emb_dim = 256):
+    def __init__(self, in_channels, out_channels):
         super().__init__()
         self.maxpool_conv = nn.Sequential(
             nn.MaxPool2d(2),
-            DoubleConv(in_channels, in_channels, residual=True),
             DoubleConv(in_channels, out_channels)
-        )
-        self.emb_layer = nn.Sequential(
-            nn.SiLU(),
-            nn.Linear(emb_dim, out_channels),
-        )
-    def forward(self, x, t):
-        x = self.maxpool_conv(x)
-        # print(x.shape)
-        emb = self.emb_layer(t)[:, :, None, None].repeat(1, 1, x.shape[-2], x.shape[-1])
-        # print('emb:', emb.shape)
-        return x+emb
-class Up(nn.Module):
-    def __init__(self, in_channels, out_channels, emb_dim = 256):
-        super().__init__()
-        self.up = nn.ConvTranspose2d(in_channels, in_channels, kernel_size=2, stride=2)
-        self.conv = nn.Sequential(
-            DoubleConv(in_channels*2, in_channels*2, residual=True),
-            DoubleConv(in_channels*2, out_channels, mid_channels=in_channels)
-        )
-        self.emb_layer = nn.Sequential(
-            nn.SiLU(),
-            nn.Linear(emb_dim, out_channels),
-        )
-    def forward(self, x, skip_x, t):
-        x = self.up(x)
-        x = torch.cat([skip_x, x], dim=1)
-        x = self.conv(x)
-        emb = self.emb_layer(t)[:, :, None, None].repeat(1, 1, x.shape[-2], x.shape[-1])
-        return x+emb
-
-class SelfAttention(nn.Module):
-    def __init__(self, in_channels, size):
-        super().__init__()
-        self.in_channels = in_channels
-        self.size = size
-        self.mha = nn.MultiheadAttention(embed_dim=in_channels, num_heads=4, batch_first=True)
-        self.ln = nn.LayerNorm(in_channels)
-        self.ff_self = nn.Sequential(
-            nn.LayerNorm(in_channels),
-            nn.Linear(in_channels, in_channels),
-            nn.GELU(),
-            nn.Linear(in_channels, in_channels)
         )
 
     def forward(self, x):
-        x = x.view(-1, self.in_channels, self.size*self.size).swapaxes(1, 2)
+        return self.maxpool_conv(x)
+
+class Up(nn.Module):
+    def __init__(self, in_channels, out_channels):
+        super().__init__()
+        self.up = nn.ConvTranspose2d(in_channels, in_channels // 2, kernel_size=2, stride=2)
+        self.conv = DoubleConv(in_channels, out_channels)
+
+    def forward(self, x1, x2):
+        x1 = self.up(x1)
+        # input is CHW
+        diffY = x2.size()[2] - x1.size()[2]
+        diffX = x2.size()[3] - x1.size()[3]
+
+        x1 = nn.functional.pad(x1, [diffX // 2, diffX - diffX // 2,
+                                  diffY // 2, diffY - diffY // 2])
+        x = torch.cat([x2, x1], dim=1)
+        return self.conv(x)
+
+class SelfAttention(nn.Module):
+    def __init__(self, channels, size=None):
+        super().__init__()
+        self.channels = channels
+        self.size = size
+        self.mha = nn.MultiheadAttention(channels, 4, batch_first=True)
+        self.ln = nn.LayerNorm([channels])
+        self.ff_self = nn.Sequential(
+            nn.LayerNorm([channels]),
+            nn.Linear(channels, channels),
+            nn.GELU(),
+            nn.Linear(channels, channels),
+        )
+
+    def forward(self, x):
+        x = x.view(-1, self.channels, self.size * self.size).swapaxes(1, 2)
         x_ln = self.ln(x)
         attention_value, _ = self.mha(x_ln, x_ln, x_ln)
         attention_value = attention_value + x
-        attention_value = self.ff_self(attention_value) + attention_value
-        return attention_value.swapaxes(2,1).view(-1, self.in_channels, self.size, self.size)
+        attention_value = self.ff_self(attention_value)
+        return attention_value.swapaxes(2, 1).view(-1, self.channels, self.size, self.size)
 
 class CBAM(nn.Module):
     def __init__(self, in_channels, reduction=16, kernel_size=7):
@@ -118,70 +116,88 @@ class CBAM(nn.Module):
         return x * spatial_attn  # Element-wise multiplication
     
 
+class SinusoidalPositionEmbeddings(nn.Module):
+    def __init__(self, dim):
+        super().__init__()
+        self.dim = dim
+
+    def forward(self, time):
+        device = time.device
+        half_dim = self.dim // 2
+        embeddings = math.log(10000) / (half_dim - 1)
+        embeddings = torch.exp(torch.arange(half_dim, device=device) * -embeddings)
+        embeddings = time[:, None] * embeddings[None, :]
+        embeddings = torch.cat((embeddings.sin(), embeddings.cos()), dim=-1)
+        return embeddings
+
 class UNet2D(nn.Module):
-    def __init__(self, in_channels=2, out_channels=1, time_dim = 256, device = None): 
-        super(UNet2D, self).__init__()
-        self.time_dim = time_dim
-        self.device = device
-        # Encoder
+    def __init__(self, img_size=256, in_channels=1, out_channels=1, pretrained_ckpt=None):
+        super().__init__()
+        self.img_size = img_size
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+        
+        # Time embedding
+        self.time_mlp = nn.Sequential(
+            SinusoidalPositionEmbeddings(img_size),
+            nn.Linear(img_size, img_size * 4),
+            nn.GELU(),
+            nn.Linear(img_size * 4, img_size),
+        )
+        
+        # Initial convolution
         self.inc = DoubleConv(in_channels, 64)
+        
+        # Downsampling
         self.down1 = Down(64, 128)
-        self.att1 = CBAM(128, reduction=16, kernel_size=7)
-
         self.down2 = Down(128, 256)
-        self.att2 = CBAM(256, reduction=8, kernel_size=5)
-
         self.down3 = Down(256, 512)
-        self.att3 = CBAM(512, reduction=4, kernel_size=3)
-
-        # Bottleneck
-        self.bot1 = DoubleConv(512, 1024)
-        self.bot2 = DoubleConv(1024, 1024)
-        self.bot3 = DoubleConv(1024, 256)
-    
-        # Decoder
-        self.up1 = Up(256, 128)
-        self.att4 = CBAM(128, reduction=8, kernel_size=5)
-
-        self.up2 = Up(128, 64)
-        self.att5 = CBAM(64, reduction=8, kernel_size=5)
-
-        self.up3 = Up(64, 64)
-        self.att6 = CBAM(64, reduction=4, kernel_size=7)
-
-        self.outc = nn.Conv2d(64, out_channels, kernel_size=1)
-
-    def pos_encoding(self, t, dim):
-        device = t.device
-        inv_freq = 1.0 / (10000 ** (torch.arange(0, dim, 2, device=device).float() / dim))
-        pos_enc_a = torch.sin(t * inv_freq)
-        pos_enc_b = torch.cos(t * inv_freq)
-        pos_enc = torch.cat((pos_enc_a, pos_enc_b), dim=-1)
-        return pos_enc
-    
+        self.down4 = Down(512, 1024)
+        
+        # Attention layers
+        self.attn1 = SelfAttention(256, size=img_size//4)
+        self.attn2 = SelfAttention(512, size=img_size//8)
+        self.attn3 = SelfAttention(1024, size=img_size//16)
+        
+        # Upsampling
+        self.up1 = Up(1024, 512)
+        self.up2 = Up(512, 256)
+        self.up3 = Up(256, 128)
+        self.up4 = Up(128, 64)
+        
+        # Output convolution
+        self.outc = OutConv(64, out_channels)
+        
+        # Load pretrained weights if provided
+        if pretrained_ckpt:
+            self.load_pretrained(pretrained_ckpt)
+            
     def forward(self, x, t):
-        t = t.unsqueeze(-1).type(torch.float32)
-        t = self.pos_encoding(t, self.time_dim)
+        # Time embedding
+        t = self.time_mlp(t)
+        
+        # Initial convolution
         x1 = self.inc(x)
-        x2 = self.down1(x1, t)
-        x2 = self.att1(x2)
-        x3 = self.down2(x2, t)
-        x3 = self.att2(x3)
-        x4 = self.down3(x3, t)
-        x4 = self.att3(x4)
-
-        x5 = self.bot1(x4)
-        x5 = self.bot2(x5)
-        x5 = self.bot3(x5)
-
-        x = self.up1(x5, x3, t)
-        x = self.att4(x)
-        x = self.up2(x, x2, t)
-        x = self.att5(x)
-        x = self.up3(x, x1, t)
-        x = self.att6(x)
-        x = self.outc(x)
-        return x
+        
+        # Downsampling with gradient checkpointing
+        x2 = torch.utils.checkpoint.checkpoint(self.down1, x1)
+        x3 = torch.utils.checkpoint.checkpoint(self.down2, x2)
+        x4 = torch.utils.checkpoint.checkpoint(self.down3, x3)
+        x5 = torch.utils.checkpoint.checkpoint(self.down4, x4)
+        
+        # Attention with gradient checkpointing
+        x3 = torch.utils.checkpoint.checkpoint(self.attn1, x3)
+        x4 = torch.utils.checkpoint.checkpoint(self.attn2, x4)
+        x5 = torch.utils.checkpoint.checkpoint(self.attn3, x5)
+        
+        # Upsampling with gradient checkpointing
+        x = torch.utils.checkpoint.checkpoint(self.up1, x5, x4)
+        x = torch.utils.checkpoint.checkpoint(self.up2, x, x3)
+        x = torch.utils.checkpoint.checkpoint(self.up3, x, x2)
+        x = torch.utils.checkpoint.checkpoint(self.up4, x, x1)
+        
+        # Output convolution
+        return self.outc(x)
 
 
 class TD_Paint:

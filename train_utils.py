@@ -2,70 +2,17 @@
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
+from torch.amp import autocast, GradScaler
+import torch._dynamo
+from tqdm import tqdm
+import numpy as np
 import math
 import os
-from tqdm import tqdm
-from torch.amp import autocast, GradScaler
 from ddpm.losses import LOSS_REGISTRY
 from metrics import RealismMetrics
 import csv
-
-
-class EMA:
-    """
-    Maintains exponential moving average of model parameters.
-    """
-    def __init__(self, model: torch.nn.Module, decay: float = 0.9999):
-        self.decay = decay
-        self.shadow = {
-            name: param.detach().clone()
-            for name, param in model.named_parameters()
-            if param.requires_grad
-        }
-        self.backup = {}
-
-    def update(self, model: torch.nn.Module):
-        for name, param in model.named_parameters():
-            if param.requires_grad:
-                self.shadow[name] = (
-                    self.decay * self.shadow[name]
-                    + (1.0 - self.decay) * param.detach()
-                )
-
-    def apply_shadow(self, model: torch.nn.Module):
-        self.backup = {}
-        for name, param in model.named_parameters():
-            if name in self.shadow:
-                self.backup[name] = param.detach().clone()
-                param.data.copy_(self.shadow[name])
-
-    def restore(self, model: torch.nn.Module):
-        for name, param in model.named_parameters():
-            if name in self.backup:
-                param.data.copy_(self.backup[name])
-        self.backup = {}
-
-
-class EarlyStopper:
-    """
-    Early stopping based on validation IoU.
-    """
-    def __init__(self, patience: int = 10, min_delta: float = 1e-4):
-        self.patience = patience
-        self.min_delta = min_delta
-        self.best_score = None
-        self.counter = 0
-        self.should_stop = False
-
-    def step(self, score: float) -> bool:
-        if self.best_score is None or score > self.best_score + self.min_delta:
-            self.best_score = score
-            self.counter = 0
-        else:
-            self.counter += 1
-            if self.counter >= self.patience:
-                self.should_stop = True
-        return self.should_stop
+from utils import EarlyStopper, EMA
 
 
 def cosine_beta_schedule(timesteps: int, s: float = 0.008) -> torch.FloatTensor:
@@ -77,48 +24,74 @@ def cosine_beta_schedule(timesteps: int, s: float = 0.008) -> torch.FloatTensor:
     return torch.clamp(betas, 0.0, 0.999)
 
 
-def evaluate_iou(
-    model: torch.nn.Module,
-    dataloader: torch.utils.data.DataLoader,
-    device: torch.device
-) -> float:
+def evaluate_iou(model, dataloader, device, diffusion):
+    """Evaluate IoU on validation set."""
     model.eval()
     ious = []
     with torch.no_grad():
-        for images, masks in dataloader:
-            images, masks = images.to(device), masks.to(device)
-            t = torch.zeros(images.size(0), dtype=torch.long, device=device)
-            x_in = torch.cat((images, masks), dim=1)
-            logits = model(x_in, t)
-            preds = (logits > 0.5).float()
-            inter = (preds * masks).sum(dim=[1,2,3])
-            union = ((preds + masks) >= 1).float().sum(dim=[1,2,3])
-            ious.append((inter / (union + 1e-6)).mean().item())
+        # Get the underlying model if wrapped in DDP
+        if hasattr(model, 'module'):
+            model = model.module
+            
+        # Create progress bar for overall validation
+        total_batches = len(dataloader)
+        pbar = tqdm(dataloader, desc="Validating", leave=True)
+        
+        for batch_idx, (images, contours) in enumerate(pbar):
+            images = images.to(device)
+            contours = contours.to(device)
+            
+            # Sample from model using fast sampling for validation
+            samples = diffusion.sample(model, images.size(0), contours, fast_sampling=True)
+            
+            # Convert to binary masks
+            pred_masks = (samples > 0.5).float()
+            true_masks = (images > 0.5).float()
+            
+            # Calculate IoU
+            intersection = (pred_masks * true_masks).sum(dim=(1, 2, 3))
+            union = pred_masks.sum(dim=(1, 2, 3)) + true_masks.sum(dim=(1, 2, 3)) - intersection
+            batch_iou = (intersection / (union + 1e-6)).mean().item()
+            ious.append(batch_iou)
+            
+            # Update progress bar with current IoU
+            pbar.set_postfix({
+                'batch': f'{batch_idx + 1}/{total_batches}',
+                'current_iou': f'{batch_iou:.4f}',
+                'avg_iou': f'{sum(ious)/len(ious):.4f}'
+            })
+            
     return sum(ious) / len(ious)
 
 
 def train(
-    model: torch.nn.Module,
+    model,
     diffusion,
-    train_loader: torch.utils.data.DataLoader,
-    val_loader: torch.utils.data.DataLoader,
-    optimizer: torch.optim.Optimizer,
-    device: torch.device,
+    optimizer,
+    train_loader,
+    val_loader,
+    device,
     args,
-    discriminator: torch.nn.Module | None = None
+    scaler=None,
+    scheduler=None,
+    ema_model=None,
+    metrics_callback=None,
+    discriminator=None,
 ):
-    """
-    Training loop that accumulates multiple losses specified in args.losses,
-    each weighted by args.lambda_<lossname>. Supports 'adv' term if
-    discriminator is passed.
-    """
+    """Train the model."""
+    # Enable cuDNN benchmarking for better performance
     torch.backends.cudnn.benchmark = True
-    if args.use_compile and hasattr(torch, "compile"):
-        model = torch.compile(model, backend="inductor")
+    
+    # Disable DDP optimizer to avoid compatibility issues with torch.compile
+    torch._dynamo.config.optimize_ddp = False
+    
+    # Use aot_eager backend which is more stable
+    model = torch.compile(model, backend="aot_eager")
 
     ema = EMA(model, decay=args.ema_decay)
     stopper = EarlyStopper(patience=args.early_stop_patience)
-    scaler = GradScaler("cuda")
+    if scaler is None:
+        scaler = GradScaler()
     metrics = RealismMetrics(device=device)
 
     model.to(device)
@@ -148,7 +121,7 @@ def train(
 
             # Forward (with optional AMP)
             if args.use_amp:
-                with autocast("cuda", dtype=torch.float16):
+                with autocast(device_type='cuda', dtype=torch.float16):
                     pred_noise = model(x_in, t)
                     # Compute weighted sum of requested losses
                     total_loss = torch.tensor(0.0, device=device, dtype=pred_noise.dtype)
@@ -192,7 +165,7 @@ def train(
         print(f"Epoch {epoch} | Train loss: {avg_loss:.6f}")
 
         # Validation
-        current_iou = evaluate_iou(model, val_loader, device)
+        current_iou = evaluate_iou(model, val_loader, device, diffusion)
         print(f"Epoch {epoch} | Val IoU: {current_iou:.4f}  (best: {best_iou:.4f})")
 
         # Compute realism metrics on validation set
@@ -257,9 +230,9 @@ def train(
             }, "best_ddpm_model.pth")
             print("Saved new best model.")
 
-        # Early stopping
-        if stopper.step(current_iou):
-            print("Early stopping criterion met; halting training.")
+        # Early stopping check
+        if stopper.early_stop(current_iou):
+            print(f"Early stopping triggered at epoch {epoch}")
             break
 
         # Periodic checkpoint

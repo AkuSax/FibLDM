@@ -8,16 +8,17 @@ MODEL_REGISTRY = {
     "mask2former": Mask2FormerWrapper,
 }
 
-def get_model(name: str, **kwargs):
-    name = name.lower()
-    if name == "unet2d":
+def get_model(arch, img_size=256, in_channels=1, out_channels=1, pretrained_ckpt=None):
+    if arch == "unet2d":
         return UNet2D(
-            in_channels=kwargs.get("in_channels", 1),
-            out_channels=kwargs.get("out_channels", 1)
+            img_size=img_size,
+            in_channels=in_channels,
+            out_channels=out_channels,
+            pretrained_ckpt=pretrained_ckpt
         )
-    elif name == "swin_unet":
+    elif arch == "swin_unet":
         return SwinUNetWrapper(**kwargs)
-    elif name == "mask2former":
+    elif arch == "mask2former":
         return Mask2FormerWrapper(**kwargs)
     else:
-        raise KeyError(f"Unknown architecture '{name}'. Available: {list(MODEL_REGISTRY)}")
+        raise ValueError(f"Unknown architecture: {arch}")

@@ -15,10 +15,32 @@ def dice_loss(pred: torch.Tensor,
     dice = (2 * inter + eps) / (union + eps)
     return 1.0 - dice.mean()
 
-# Boundary / Hausdorff
+# Boundary / Edge-based loss
 def boundary_loss(pred, target):
-    mask = (torch.sigmoid(pred) > 0.5).float()
-    return _hd(mask, target)
+    # Convert to probabilities
+    pred_prob = torch.sigmoid(pred)
+    
+    # Compute gradients using Sobel filters (edge detection)
+    sobel_x = torch.tensor([[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]], 
+                          dtype=pred_prob.dtype,  # Match input precision
+                          device=pred.device).view(1, 1, 3, 3)
+    sobel_y = torch.tensor([[-1, -2, -1], [0, 0, 0], [1, 2, 1]], 
+                          dtype=pred_prob.dtype,  # Match input precision
+                          device=pred.device).view(1, 1, 3, 3)
+    
+    # Compute edges for both prediction and target
+    pred_edges_x = F.conv2d(pred_prob, sobel_x, padding=1)
+    pred_edges_y = F.conv2d(pred_prob, sobel_y, padding=1)
+    pred_edges = torch.sqrt(pred_edges_x**2 + pred_edges_y**2)
+    
+    target_edges_x = F.conv2d(target, sobel_x, padding=1)
+    target_edges_y = F.conv2d(target, sobel_y, padding=1)
+    target_edges = torch.sqrt(target_edges_x**2 + target_edges_y**2)
+    
+    # Compute edge loss
+    edge_loss = F.mse_loss(pred_edges, target_edges)
+    
+    return edge_loss
 
 # Focal
 def focal_loss(pred: torch.Tensor,

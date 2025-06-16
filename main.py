@@ -23,107 +23,115 @@ def train_proc(args):
     device = torch.device(f"cuda:{local_rank}")
     dist.init_process_group(backend="nccl")
 
-    # Data
-    dataset = ContourDataset(args.csv_file, args.data_dir)
-    train_size = int(0.8 * len(dataset))
-    val_size = len(dataset) - train_size
-    train_ds, val_ds = torch.utils.data.random_split(
-        dataset, [train_size, val_size]
-    )
-
-    train_sampler = distributed.DistributedSampler(train_ds)
-    val_sampler   = distributed.DistributedSampler(val_ds, shuffle=False)
-
-    train_loader = DataLoader(
-        train_ds,
-        batch_size=args.batch_size,
-        sampler=train_sampler,
-        num_workers=args.num_workers,
-        pin_memory=True,
-        prefetch_factor=8,
-        persistent_workers=True
-    )
-    val_loader = DataLoader(
-        val_ds,
-        batch_size=args.batch_size,
-        sampler=val_sampler,
-        num_workers=args.num_workers,
-        pin_memory=True,
-        prefetch_factor=8,
-        persistent_workers=True
-    )
-
-    # Model + (optional) Discriminator
-    model = get_model(
-        args.arch,
-        img_size=args.image_size,
-        in_channels=args.in_channels,
-        out_channels=args.out_channels,
-        pretrained_ckpt = args.encoder_ckpt
-    )
-    if args.encoder_ckpt:
-        state = torch.hub.load_state_dict_from_url(args.encoder_ckpt, map_location="cpu", check_hash=True)
-        missing, _ = model.load_state_dict(state, strict=False)
-        if local_rank == 0:
-            print(f"[Info] Loaded encoder weights; missing keys: {missing}")
-    model = model.to(device)
-    model = DDP(model, device_ids=[local_rank], output_device=local_rank)
-
-    discriminator = None
-    if "adv" in args.losses:
-        discriminator = PatchGANDiscriminator(device=device).to(device)
-        discriminator = DDP(discriminator, device_ids=[local_rank], output_device=local_rank)
-
-    # Optimizers
-    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr)
-    if discriminator is not None:
-        optim_d = torch.optim.AdamW(discriminator.parameters(), lr=args.lr_d)
-    else:
-        optim_d = None
-
-    # Optional checkpoint load
-    if args.load_model:
-        ckpt = torch.load(args.load_model, map_location=device)
-        model.load_state_dict(ckpt["model_state"])
-        optimizer.load_state_dict(ckpt["optimizer_state"])
-        print(f"[Rank {local_rank}] Loaded model epoch {ckpt.get('epoch','?')}")
-
-    # Diffusion setup
-    diffusion = Diffusion(
-        noise_step=args.noise_steps,
-        beta_start=args.beta_start,
-        beta_end=args.beta_end,
-        img_size=args.image_size,
-        device=device
-    )
-    diffusion.betas = cosine_beta_schedule(
-        diffusion.noise_step
-    ).to(device)
-    diffusion.alpha     = 1.0 - diffusion.beta
-    diffusion.alpha_hat = torch.cumprod(diffusion.alpha, dim=0)
-
-    # Training
-    samples = ddpm_train(
-        model=model,
-        diffusion=diffusion,
-        train_loader=train_loader,
-        val_loader=val_loader,
-        optimizer=optimizer,
-        device=device,
-        args=args,
-        discriminator=discriminator
-    )
-
-    # Save EMA samples (rank 0 only)
-    if dist.get_rank() == 0:
-        grid = vutils.make_grid(samples, nrow=4, normalize=True)
-        os.makedirs(args.save_dir, exist_ok=True)
-        plt.imsave(
-            os.path.join(args.save_dir, "ema_samples.png"),
-            grid.permute(1, 2, 0).cpu().numpy()
+    try:
+        # Data
+        dataset = ContourDataset(args.csv_file, args.data_dir)
+        train_size = int(0.8 * len(dataset))
+        val_size = len(dataset) - train_size
+        train_ds, val_ds = torch.utils.data.random_split(
+            dataset, [train_size, val_size]
         )
 
-    dist.destroy_process_group()
+        train_sampler = distributed.DistributedSampler(train_ds)
+        val_sampler   = distributed.DistributedSampler(val_ds, shuffle=False)
+
+        train_loader = DataLoader(
+            train_ds,
+            batch_size=args.batch_size,
+            sampler=train_sampler,
+            num_workers=args.num_workers,
+            pin_memory=True,
+            prefetch_factor=16,
+            persistent_workers=True,
+            drop_last=True
+        )
+        val_loader = DataLoader(
+            val_ds,
+            batch_size=args.batch_size,
+            sampler=val_sampler,
+            num_workers=args.num_workers,
+            pin_memory=True,
+            prefetch_factor=16,
+            persistent_workers=True,
+            drop_last=True
+        )
+
+        # Model + (optional) Discriminator
+        model = get_model(
+            args.arch,
+            img_size=args.image_size,
+            in_channels=args.in_channels,
+            out_channels=args.out_channels,
+            pretrained_ckpt = args.encoder_ckpt
+        )
+        if args.encoder_ckpt:
+            state = torch.hub.load_state_dict_from_url(args.encoder_ckpt, map_location="cpu", check_hash=True)
+            missing, _ = model.load_state_dict(state, strict=False)
+            if local_rank == 0:
+                print(f"[Info] Loaded encoder weights; missing keys: {missing}")
+        model = model.to(device)
+        model = DDP(model, device_ids=[local_rank], output_device=local_rank)
+
+        discriminator = None
+        if "adv" in args.losses:
+            discriminator = PatchGANDiscriminator(device=device).to(device)
+            discriminator = DDP(discriminator, device_ids=[local_rank], output_device=local_rank)
+
+        # Optimizers
+        optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr)
+        if discriminator is not None:
+            optim_d = torch.optim.AdamW(discriminator.parameters(), lr=args.lr_d)
+        else:
+            optim_d = None
+
+        # Optional checkpoint load
+        if args.load_model:
+            ckpt = torch.load(args.load_model, map_location=device)
+            model.load_state_dict(ckpt["model_state"])
+            optimizer.load_state_dict(ckpt["optimizer_state"])
+            print(f"[Rank {local_rank}] Loaded model epoch {ckpt.get('epoch','?')}")
+
+        # Diffusion setup
+        diffusion = Diffusion(
+            noise_step=args.noise_steps,
+            beta_start=args.beta_start,
+            beta_end=args.beta_end,
+            img_size=args.image_size,
+            device=device
+        )
+        diffusion.betas = cosine_beta_schedule(
+            diffusion.noise_step
+        ).to(device)
+        diffusion.alpha     = 1.0 - diffusion.beta
+        diffusion.alpha_hat = torch.cumprod(diffusion.alpha, dim=0)
+
+        # Training
+        samples = ddpm_train(
+            model=model,
+            diffusion=diffusion,
+            train_loader=train_loader,
+            val_loader=val_loader,
+            optimizer=optimizer,
+            device=device,
+            args=args,
+            discriminator=discriminator,
+            scaler=None,
+            scheduler=None,
+            ema_model=None,
+            metrics_callback=None
+        )
+
+        # Save EMA samples (rank 0 only)
+        if dist.get_rank() == 0:
+            grid = vutils.make_grid(samples, nrow=4, normalize=True)
+            os.makedirs(args.save_dir, exist_ok=True)
+            plt.imsave(
+                os.path.join(args.save_dir, "ema_samples.png"),
+                grid.permute(1, 2, 0).cpu().numpy()
+            )
+    finally:
+        # Cleanup
+        dist.destroy_process_group()
 
 
 def main():
