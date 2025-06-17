@@ -36,7 +36,7 @@ DDPM-v2/
 ├── metrics.py                  # FID, KID, LPIPS, SSIM realism metrics
 ├── utils.py                    # Helper I/O for .mat files, EarlyStopper
 ├── compare_models.ipynb        # Notebook for comparing model checkpoints
-├── requirements.txt            # Project dependencies
+└── requirements.txt            # Project dependencies
 ```
 
 ---
