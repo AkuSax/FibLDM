@@ -13,6 +13,7 @@ from ddpm.losses import LOSS_REGISTRY
 from metrics import RealismMetrics
 import csv
 from utils import EarlyStopper, EMA
+from metrics import KernelInceptionDistance
 
 
 def cosine_beta_schedule(timesteps: int, s: float = 0.008) -> torch.FloatTensor:
@@ -174,22 +175,76 @@ def train(
             metrics.reset()
             model.eval()
             with torch.no_grad():
-                # Accumulate all validation samples
-                all_val_images = []
-                all_val_contours = []
                 for images, contours in val_loader:
-                    all_val_images.append(images)
-                    all_val_contours.append(contours)
-                val_images = torch.cat(all_val_images, dim=0).to(device)
-                val_contours = torch.cat(all_val_contours, dim=0).to(device)
-                # Generate samples
-                samples = diffusion.sample(model, val_images.size(0), val_contours)
+                    images = images.to(device)
+                    contours = contours.to(device)
+                    # Generate samples for this batch
+                    samples = diffusion.sample(model, images.size(0), contours)
+                    # Update metrics batch by batch
+                    metrics.fid.update(images.repeat(1, 3, 1, 1) if images.shape[1] == 1 else images, real=True)
+                    metrics.fid.update(samples.repeat(1, 3, 1, 1) if samples.shape[1] == 1 else samples, real=False)
+
+                    # For KID, create a new metric for each batch to avoid memory issues
+                    batch_kid = KernelInceptionDistance(subset_size=min(50, images.size(0)//2), normalize=True).to(device)
+                    batch_kid.update(images.repeat(1, 3, 1, 1) if images.shape[1] == 1 else images, real=True)
+                    batch_kid.update(samples.repeat(1, 3, 1, 1) if samples.shape[1] == 1 else samples, real=False)
+                    kid_mean, kid_std = batch_kid.compute()
+                    if 'kid' not in metric_results:
+                        metric_results['kid'] = []
+                        metric_results['kid_std'] = []
+                    metric_results['kid'].append(kid_mean.item())
+                    metric_results['kid_std'].append(kid_std.item())
+
+                    # LPIPS and SSIM (process in small batches)
+                    batch_size = 8
+                    for i in range(0, images.size(0), batch_size):
+                        end_idx = min(i + batch_size, images.size(0))
+                        
+                        # First ensure inputs are in [0,1]
+                        images_norm = torch.clamp(images[i:end_idx], 0, 1)
+                        samples_norm = torch.clamp(samples[i:end_idx], 0, 1)
+                        
+                        # Convert to [-1,1] range for LPIPS
+                        real_lpips = (2.0 * images_norm - 1.0)
+                        fake_lpips = (2.0 * samples_norm - 1.0)
+                        
+                        # Add channels if needed
+                        if real_lpips.shape[1] == 1:
+                            real_lpips = real_lpips.repeat(1, 3, 1, 1)
+                            fake_lpips = fake_lpips.repeat(1, 3, 1, 1)
+                        
+                        # Final clamp to ensure strict [-1,1] range
+                        real_lpips = torch.clamp(real_lpips, -1.0, 1.0)
+                        fake_lpips = torch.clamp(fake_lpips, -1.0, 1.0)
+                        
+                        # Update metrics
+                        metrics.lpips.update(fake_lpips, real_lpips)
+                        metrics.ssim.update(samples_norm, images_norm)  # SSIM expects [0,1]
+
                 # Compute metrics
-                metric_results = metrics.compute_metrics(
-                    real_images=val_images,
-                    fake_images=samples,
-                    same_mask_images=val_images  # Using same images for LPIPS/SSIM
-                )
+                try:
+                    metric_results['fid'] = metrics.fid.compute().item()
+                except Exception as e:
+                    print(f"[metrics] FID computation error: {str(e)}")
+                    metric_results['fid'] = float('inf')
+                try:
+                    metric_results['kid'] = np.mean(metric_results['kid']) if 'kid' in metric_results else float('inf')
+                    metric_results['kid_std'] = np.mean(metric_results['kid_std']) if 'kid_std' in metric_results else float('inf')
+                except Exception as e:
+                    print(f"[metrics] KID computation error: {str(e)}")
+                    metric_results['kid'] = float('inf')
+                    metric_results['kid_std'] = float('inf')
+                try:
+                    metric_results['lpips'] = metrics.lpips.compute().item()
+                except Exception as e:
+                    print(f"[metrics] LPIPS computation error: {str(e)}")
+                    metric_results['lpips'] = float('inf')
+                try:
+                    metric_results['ssim'] = metrics.ssim.compute().item()
+                except Exception as e:
+                    print(f"[metrics] SSIM computation error: {str(e)}")
+                    metric_results['ssim'] = float('inf')
+
                 print(f"Epoch {epoch} | Metrics:")
                 for name, value in metric_results.items():
                     print(f"  {name}: {value:.4f}")
