@@ -85,5 +85,7 @@ class Diffusion:
                 x[i:end_idx] = x_chunk
                 
         model.train()
+        # Rescale from [-1, 1] to [0, 1]
+        x = (x.clamp(-1, 1) + 1) / 2
         return x
     

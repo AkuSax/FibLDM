@@ -1,5 +1,6 @@
 import os
 import argparse
+import sys
 import torch
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
@@ -182,7 +183,10 @@ def main():
     parser.add_argument("--load_model", type=str, default=None,
                         help="Path to checkpoint for fine-tuning")
 
-    args = parser.parse_args()
+    # Filter out empty or whitespace-only arguments that can occur with
+    # multi-line shell commands.
+    filtered_args = [arg for arg in sys.argv[1:] if arg.strip()]
+    args = parser.parse_args(filtered_args)
     train_proc(args)
 
 

@@ -99,6 +99,8 @@ class ContourDataset(Dataset):
             contour = contour.squeeze(0)
             
             volume = (volume - volume.min()) / (volume.max() - volume.min())
+            # Normalize to [-1, 1] for diffusion model
+            volume = volume * 2.0 - 1.0
             volume = volume.float()
 
             contour = (contour>0.2).float()
