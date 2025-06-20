@@ -2,7 +2,7 @@
 
 ---
 
-**DDPM‑v2** is a PyTorch implementation of a Denoising Diffusion Probabilistic Model (DDPM) tailored for pixel‑wise contour/segmentation tasks.  The codebase features:
+**DDPM‑v2** is a PyTorch implementation of a conditional Denoising Diffusion Probabilistic Model (DDPM) tailored for pixel‑wise contour/segmentation tasks.  The codebase features:
 
 - **Cosine β‑schedule** (Nichol & Dhariwal, 2021) for smoother noise variance.
 - **Exponential Moving Average (EMA)** of model weights for robust sampling.
@@ -20,14 +20,23 @@
 
 ```
 DDPM-v2/
-├── main.py               # DDP entry point
-├── train_utils.py        # AMP + EMA + early‑stop loop
-├── model.py              # UNet2D backbone
-├── DDPM.py               # Diffusion utilities (noise, sampling)
-├── dataset.py            # ContourDataset wrapper
-├── utils.py              # save_images, helper I/O
-├── trained_models/       # periodic ckpts (.pt)
-└── README.md             # <— you are here
+├── ddpm/
+│   ├── __init__.py
+│   ├── diffusion.py            # Core DDPM forward/reverse process
+│   └── losses.py               # Registry of loss functions
+├── models/
+│   ├── __init__.py             # Model registry (get_model)
+│   ├── unet2d.py               # Primary UNet architecture
+│   ├── swin_unet.py            # Wrapper for Swin-UNet
+│   └── mask2former.py          # Wrapper for Mask2Former
+├── main.py                     # DDP entry point for training
+├── train_utils.py              # Core training, validation, and EMA logic
+├── dataset.py                  # ContourDataset for loading .mat files
+├── discriminator.py            # PatchGAN discriminator for adversarial loss
+├── metrics.py                  # FID, KID, LPIPS, SSIM realism metrics
+├── utils.py                    # Helper I/O for .mat files, EarlyStopper
+├── compare_models.ipynb        # Notebook for comparing model checkpoints
+└── requirements.txt            # Project dependencies
 ```
 
 ---
