@@ -206,72 +206,105 @@ def train(
                 save_debug_samples(epoch, val_images, val_contours, debug_samples)
                 print(f"Saved debug samples for epoch {epoch}.")
 
-        # Compute realism metrics on validation set
+        # --- Realism Metrics Calculation on Validation Set ---
         metric_results = {}
-        if is_main and epoch % args.metrics_interval == 0:
-            metrics.reset()
+        if epoch % args.metrics_interval == 0:
             model.eval()
+
+            # Part 1: All GPUs generate samples for their portion of the validation set
+            local_real_images = []
+            local_fake_samples = []
             with torch.no_grad():
-                for images, contours in val_loader:
+                # Disable tqdm on non-main ranks
+                val_pbar = tqdm(val_loader, desc="Collecting validation samples", disable=not is_main)
+                for images, contours in val_pbar:
                     images = images.to(device)
                     contours = contours.to(device)
-                    # Generate samples for this batch
-                    samples = diffusion.sample(model, images.size(0), contours)
-                    # Update metrics batch by batch
-                    metrics.fid.update(images.repeat(1, 3, 1, 1) if images.shape[1] == 1 else images, real=True)
-                    metrics.fid.update(samples.repeat(1, 3, 1, 1) if samples.shape[1] == 1 else samples, real=False)
+                    samples = diffusion.sample(model, images.size(0), contours, fast_sampling=True)
+                    local_real_images.append(images.cpu())
+                    local_fake_samples.append(samples.cpu())
 
-                    # For KID, create a new metric for each batch to avoid memory issues
-                    subset_size = min(50, max(1, images.size(0)//2))  # Ensure subset_size is at least 1
-                    batch_kid = KernelInceptionDistance(subset_size=subset_size, normalize=True).to(device)
-                    batch_kid.update(images.repeat(1, 3, 1, 1) if images.shape[1] == 1 else images, real=True)
-                    batch_kid.update(samples.repeat(1, 3, 1, 1) if samples.shape[1] == 1 else samples, real=False)
-                    kid_mean, kid_std = batch_kid.compute()
-                    if 'kid' not in metric_results:
-                        metric_results['kid'] = []
-                        metric_results['kid_std'] = []
-                    metric_results['kid'].append(kid_mean.item())
-                    metric_results['kid_std'].append(kid_std.item())
+            # Part 2: Synchronize and gather all data to the main process
+            # Create placeholder lists on all processes
+            if dist.is_initialized():
+                gathered_real_obj = [None for _ in range(dist.get_world_size())]
+                gathered_fake_obj = [None for _ in range(dist.get_world_size())]
+                
+                # The actual gathering operation
+                dist.all_gather_object(gathered_real_obj, local_real_images)
+                dist.all_gather_object(gathered_fake_obj, local_fake_samples)
+            
+            # Part 3: Main process computes the metrics
+            if is_main:
+                metrics.reset()
 
-                    # LPIPS and SSIM (process in small batches)
-                    batch_size = 8
-                    for i in range(0, images.size(0), batch_size):
-                        end_idx = min(i + batch_size, images.size(0))
-                        
-                        # First ensure inputs are in [0,1]
-                        images_norm = torch.clamp(images[i:end_idx], 0, 1)
-                        samples_norm = torch.clamp(samples[i:end_idx], 0, 1)
-                        
-                        # Convert to [-1,1] range for LPIPS
-                        real_lpips = (2.0 * images_norm - 1.0)
-                        fake_lpips = (2.0 * samples_norm - 1.0)
-                        
-                        # Add channels if needed
-                        if real_lpips.shape[1] == 1:
-                            real_lpips = real_lpips.repeat(1, 3, 1, 1)
-                            fake_lpips = fake_lpips.repeat(1, 3, 1, 1)
-                        
-                        # Final clamp to ensure strict [-1,1] range
-                        real_lpips = torch.clamp(real_lpips, -1.0, 1.0)
-                        fake_lpips = torch.clamp(fake_lpips, -1.0, 1.0)
-                        
-                        # Update metrics
-                        metrics.lpips.update(fake_lpips, real_lpips)
-                        metrics.ssim.update(samples_norm, images_norm)  # SSIM expects [0,1]
+                # Consolidate the gathered data if in distributed mode
+                if dist.is_initialized():
+                    all_real_images = [tensor for sublist in gathered_real_obj for tensor in sublist]
+                    all_fake_samples = [tensor for sublist in gathered_fake_obj for tensor in sublist]
+                else: # single GPU
+                    all_real_images = local_real_images
+                    all_fake_samples = local_fake_samples
+                
+                all_real_images = torch.cat(all_real_images, dim=0)
+                all_fake_samples = torch.cat(all_fake_samples, dim=0)
 
-                # Compute metrics
+                # Step 3: Compute metrics by iterating over the full distributions in batches
+                # This avoids OOM errors while still computing metrics on the whole set
+                pbar_metrics = tqdm(range(0, all_real_images.size(0), args.batch_size), desc="Calculating metrics", leave=False)
+                for i in pbar_metrics:
+                    end_idx = min(i + args.batch_size, all_real_images.size(0))
+
+                    # Get batches and move to device
+                    real_batch = all_real_images[i:end_idx].to(device)
+                    fake_batch = all_fake_samples[i:end_idx].to(device)
+
+                    # Normalize images to expected ranges for each metric
+                    # Real images from dataloader are [-1, 1], fake samples are [0, 1]
+                    real_norm_01 = (real_batch + 1) / 2 # To [0, 1]
+                    fake_norm_01 = fake_batch # Already [0, 1]
+                    
+                    real_norm_m11 = real_batch # Already [-1, 1]
+                    fake_norm_m11 = fake_batch * 2.0 - 1.0 # To [-1, 1]
+
+                    # Ensure 3 channels for metrics that require it (FID, LPIPS)
+                    real_3c_01 = real_norm_01.repeat(1, 3, 1, 1) if real_norm_01.shape[1] == 1 else real_norm_01
+                    fake_3c_01 = fake_norm_01.repeat(1, 3, 1, 1) if fake_norm_01.shape[1] == 1 else fake_norm_01
+                    real_3c_m11 = real_norm_m11.repeat(1, 3, 1, 1) if real_norm_m11.shape[1] == 1 else real_norm_m11
+                    fake_3c_m11 = fake_norm_m11.repeat(1, 3, 1, 1) if fake_norm_m11.shape[1] == 1 else fake_norm_m11
+
+                    # Update metrics
+                    metrics.fid.update(real_3c_01, real=True)
+                    metrics.fid.update(fake_3c_01, real=False)
+                    metrics.lpips.update(fake_3c_m11, real_3c_m11)
+                    metrics.ssim.update(fake_norm_01, real_norm_01)
+
+                # Step 4: Compute final metric scores
                 try:
                     metric_results['fid'] = metrics.fid.compute().item()
                 except Exception as e:
                     print(f"[metrics] FID computation error: {str(e)}")
                     metric_results['fid'] = float('inf')
+                
+                # For KID, compute on the whole dataset at once
                 try:
-                    metric_results['kid'] = np.mean(metric_results['kid']) if 'kid' in metric_results else float('inf')
-                    metric_results['kid_std'] = np.mean(metric_results['kid_std']) if 'kid_std' in metric_results else float('inf')
+                    subset_size = min(100, all_real_images.size(0))
+                    kid_metric = KernelInceptionDistance(subset_size=subset_size, normalize=True).to(device)
+                    
+                    real_images_3c = all_real_images.repeat(1, 3, 1, 1) if all_real_images.shape[1] == 1 else all_real_images
+                    fake_samples_3c = all_fake_samples.repeat(1, 3, 1, 1) if all_fake_samples.shape[1] == 1 else all_fake_samples
+                    
+                    kid_metric.update(((real_images_3c + 1) / 2).to(device), real=True) # Normalize to [0, 1] for KID
+                    kid_metric.update(fake_samples_3c.to(device), real=False)
+                    
+                    kid_mean, kid_std = kid_metric.compute()
+                    metric_results['kid'] = kid_mean.item()
+                    metric_results['kid_std'] = kid_std.item()
                 except Exception as e:
                     print(f"[metrics] KID computation error: {str(e)}")
                     metric_results['kid'] = float('inf')
                     metric_results['kid_std'] = float('inf')
+
                 try:
                     metric_results['lpips'] = metrics.lpips.compute().item()
                 except Exception as e:
@@ -285,7 +318,17 @@ def train(
 
                 print(f"Epoch {epoch} | Metrics:")
                 for name, value in metric_results.items():
-                    print(f"  {name}: {value:.4f}")
+                    # Check for std dev and print together
+                    if '_std' in name: continue
+                    std_name = f"{name}_std"
+                    if std_name in metric_results:
+                        print(f"  {name}: {value:.4f} (std: {metric_results[std_name]:.4f})")
+                    else:
+                        print(f"  {name}: {value:.4f}")
+            
+            # Part 4: Wait for the main process to finish metrics and logging before continuing
+            if dist.is_initialized():
+                dist.barrier()
             model.train()
 
         # Live CSV logging
@@ -372,7 +415,7 @@ def train(
         sample_contour = final_val_contours[:sample_batch_size].to(device)
         
         # Generate the final samples
-        samples = diffusion.sample(model, sample_batch_size, sample_contour)
+        samples = diffusion.sample(model, sample_batch_size, sample_contour, fast_sampling=True)
         ema.restore(model)
     else:
         samples = None

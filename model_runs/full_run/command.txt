@@ -1,0 +1,14 @@
+torchrun --nproc_per_node=2 main.py \
+    --data_dir /hot/Yi-Kuan/Fibrosis/ \
+    --csv_file /hot/Yi-Kuan/Fibrosis/label.csv \
+    --arch unet2d \
+    --batch_size 26 \ 
+    --num_workers 8 \
+    --epochs 500 \
+    --use_amp \
+    --use_compile \
+    --metrics_interval 20 \ 
+    --save_interval 10 \
+    --losses mse,lpips \
+    --lambda_mse 1.0 \
+    --lambda_lpips 1.0

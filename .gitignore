@@ -1,4 +1,5 @@
 __pycache__/
+debug_samples/
 notebooks/
 *.py[cod]
 *.ipynb_checkpoints
