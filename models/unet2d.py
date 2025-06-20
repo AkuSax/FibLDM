@@ -145,6 +145,18 @@ class UNet2D(nn.Module):
             nn.Linear(img_size * 4, img_size),
         )
         
+        # Time embedding projection layers for each stage
+        time_dim = img_size
+        self.time_proj_down1 = nn.Linear(time_dim, 128)
+        self.time_proj_down2 = nn.Linear(time_dim, 256)
+        self.time_proj_down3 = nn.Linear(time_dim, 512)
+        self.time_proj_down4 = nn.Linear(time_dim, 1024)
+        
+        self.time_proj_up1 = nn.Linear(time_dim, 512)
+        self.time_proj_up2 = nn.Linear(time_dim, 256)
+        self.time_proj_up3 = nn.Linear(time_dim, 128)
+        self.time_proj_up4 = nn.Linear(time_dim, 64)
+        
         # Initial convolution
         self.inc = DoubleConv(in_channels, 64)
         
@@ -174,27 +186,41 @@ class UNet2D(nn.Module):
             
     def forward(self, x, t):
         # Time embedding
-        t = self.time_mlp(t)
+        t_emb = self.time_mlp(t)
         
         # Initial convolution
         x1 = self.inc(x)
         
-        # Downsampling with gradient checkpointing
-        x2 = torch.utils.checkpoint.checkpoint(self.down1, x1)
-        x3 = torch.utils.checkpoint.checkpoint(self.down2, x2)
-        x4 = torch.utils.checkpoint.checkpoint(self.down3, x3)
-        x5 = torch.utils.checkpoint.checkpoint(self.down4, x4)
+        # Downsampling with time injection
+        x2 = self.down1(x1)
+        x2 = x2 + self.time_proj_down1(F.relu(t_emb))[:, :, None, None]
         
-        # Attention with gradient checkpointing
-        x3 = torch.utils.checkpoint.checkpoint(self.attn1, x3)
-        x4 = torch.utils.checkpoint.checkpoint(self.attn2, x4)
-        x5 = torch.utils.checkpoint.checkpoint(self.attn3, x5)
+        x3 = self.down2(x2)
+        x3 = x3 + self.time_proj_down2(F.relu(t_emb))[:, :, None, None]
         
-        # Upsampling with gradient checkpointing
-        x = torch.utils.checkpoint.checkpoint(self.up1, x5, x4)
-        x = torch.utils.checkpoint.checkpoint(self.up2, x, x3)
-        x = torch.utils.checkpoint.checkpoint(self.up3, x, x2)
-        x = torch.utils.checkpoint.checkpoint(self.up4, x, x1)
+        x4 = self.down3(x3)
+        x4 = x4 + self.time_proj_down3(F.relu(t_emb))[:, :, None, None]
+        
+        x5 = self.down4(x4)
+        x5 = x5 + self.time_proj_down4(F.relu(t_emb))[:, :, None, None]
+        
+        # Attention
+        x3 = self.attn1(x3)
+        x4 = self.attn2(x4)
+        x5 = self.attn3(x5)
+        
+        # Upsampling with time injection
+        x = self.up1(x5, x4)
+        x = x + self.time_proj_up1(F.relu(t_emb))[:, :, None, None]
+        
+        x = self.up2(x, x3)
+        x = x + self.time_proj_up2(F.relu(t_emb))[:, :, None, None]
+        
+        x = self.up3(x, x2)
+        x = x + self.time_proj_up3(F.relu(t_emb))[:, :, None, None]
+        
+        x = self.up4(x, x1)
+        x = x + self.time_proj_up4(F.relu(t_emb))[:, :, None, None]
         
         # Output convolution
         return self.outc(x)
