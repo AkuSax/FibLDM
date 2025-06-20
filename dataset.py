@@ -51,21 +51,22 @@ class ContourDataset(Dataset):
         self.img_dir   = img_dir # data folder
         self.istransform = istransform
         
-        self.transforms = transforms.Compose(
-        [
+        self.transforms = transforms.Compose([
             transforms.RandomCrop(256, padding=32, fill=0, padding_mode='constant'),
             transforms.RandomHorizontalFlip(p=0.5),
+            transforms.RandomVerticalFlip(p=0.5),
             transforms.RandomApply([
                 NonUniformScaling(scale_x_range=[0.8,1.2], scale_y_range=[0.8,1.2]),
                 transforms.RandomAffine(
-                    degrees=5,
+                    degrees=10,
                     translate=(0.1,0.1),
                     scale=(0.9,1.1),
                     shear=(0.9,1.1)
                 ),
             ], p=0.9),
-        ]
-        )
+            transforms.Lambda(lambda x: x + 0.05 * torch.randn_like(x)),
+            transforms.Lambda(lambda x: x * (0.8 + 0.4 * torch.rand(1).item())),
+        ])
 
 
     def __len__(self): # total data number

@@ -12,6 +12,7 @@ from models import get_model
 from dataset import ContourDataset
 from discriminator import PatchGANDiscriminator
 from train_utils import train as ddpm_train, cosine_beta_schedule
+from torch.optim.lr_scheduler import CosineAnnealingLR
 
 torch.backends.cudnn.benchmark = True
 torch.set_float32_matmul_precision('high')
@@ -104,7 +105,8 @@ def train_proc(args):
             discriminator = DDP(discriminator, device_ids=[local_rank], output_device=local_rank)
 
         # Optimizers
-        optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr)
+        optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=0.05)
+        scheduler = CosineAnnealingLR(optimizer, T_max=args.num_epochs, eta_min=1e-6)
         if discriminator is not None:
             optim_d = torch.optim.AdamW(discriminator.parameters(), lr=args.lr_d)
         else:
@@ -148,7 +150,7 @@ def train_proc(args):
             args=args,
             discriminator=discriminator,
             scaler=None,
-            scheduler=None,
+            scheduler=scheduler,
             ema_model=None,
             metrics_callback=None
         )
@@ -216,6 +218,8 @@ def main():
     parser.add_argument("--lambda_boundary", type=float, default=0.0)
     parser.add_argument("--lambda_focal",    type=float, default=0.0)
     parser.add_argument("--lambda_adv",      type=float, default=0.0)
+    parser.add_argument("--lambda_lpips",    type=float, default=0.0,
+                        help="Weight for LPIPS perceptual loss")
 
     parser.add_argument("--load_model", type=str, default=None,
                         help="Path to checkpoint for fine-tuning")

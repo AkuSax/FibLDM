@@ -10,3 +10,4 @@ lpips>=0.1.4
 timm>=0.9.0  # For Swin-UNet
 opencv-python>=4.8.0
 pillow>=10.0.0 
+lpips>=0.1.4

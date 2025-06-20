@@ -5,6 +5,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.amp import autocast, GradScaler
 import torch._dynamo
+import torch.distributed as dist
 from tqdm import tqdm
 import numpy as np
 import math
@@ -14,6 +15,7 @@ from metrics import RealismMetrics
 import csv
 from utils import EarlyStopper, EMA, save_debug_samples
 from metrics import KernelInceptionDistance
+import lpips
 
 
 def cosine_beta_schedule(timesteps: int, s: float = 0.008) -> torch.FloatTensor:
@@ -80,6 +82,9 @@ def train(
     discriminator=None,
 ):
     """Train the model."""
+    # Check if this is the main process
+    is_main = not dist.is_initialized() or dist.get_rank() == 0
+    
     # Enable cuDNN benchmarking for better performance
     torch.backends.cudnn.benchmark = True
     
@@ -94,24 +99,29 @@ def train(
     if scaler is None:
         scaler = GradScaler()
     metrics = RealismMetrics(device=device)
+    # Instantiate LPIPS model for loss calculation
+    if 'lpips' in args.losses:
+        lpips_loss_fn = lpips.LPIPS(net='vgg').to(device)
 
     model.to(device)
 
     # Setup CSV logging
     metrics_csv = os.path.join(args.save_dir, 'metrics_log.csv')
-    if not os.path.exists(metrics_csv):
+    if is_main and not os.path.exists(metrics_csv):
         with open(metrics_csv, 'w', newline='') as f:
             writer = csv.writer(f)
-            writer.writerow(['epoch', 'fid', 'kid', 'lpips', 'ssim', 'val_iou', 'train_loss'])
+            writer.writerow(['epoch', 'fid', 'kid', 'lpips', 'ssim', 'train_loss'])
 
     for epoch in range(args.num_epochs):
         model.train()
         running_loss = 0.0
 
-        for images, contour in tqdm(train_loader, desc=f"Epoch {epoch}"):
+        pbar = tqdm(train_loader, desc=f"Epoch {epoch}", disable=not is_main)
+        for images, contour in pbar:
             # Ensure we have a reasonable batch size for distributed training
             if images.size(0) == 0:
-                print(f"Warning: Empty batch encountered, skipping...")
+                if is_main:
+                    print(f"Warning: Empty batch encountered, skipping...")
                 continue
                 
             images = images.to(device, non_blocking=True)
@@ -136,6 +146,14 @@ def train(
                                 raise RuntimeError("--losses adv requires a discriminator")
                             disc_pred = discriminator(pred_noise)
                             l = LOSS_REGISTRY[name](disc_pred)
+                        elif name == "lpips":
+                            # Reconstruct predicted x0
+                            sqrt_alpha_hat = torch.sqrt(diffusion.alpha_hat[t])[:, None, None, None]
+                            sqrt_one_minus_alpha_hat = torch.sqrt(1. - diffusion.alpha_hat[t])[:, None, None, None]
+                            pred_x0 = (x_t - sqrt_one_minus_alpha_hat * pred_noise) / sqrt_alpha_hat
+                            pred_x0 = torch.tanh(pred_x0)
+                            # LPIPS loss between predicted x0 and original image
+                            l = lpips_loss_fn(pred_x0, images).mean()
                         else:
                             l = LOSS_REGISTRY[name](pred_noise, noise)
                         total_loss = total_loss + getattr(args, f"lambda_{name}") * l
@@ -148,6 +166,14 @@ def train(
                             raise RuntimeError("--losses adv requires a discriminator")
                         disc_pred = discriminator(pred_noise)
                         l = LOSS_REGISTRY[name](disc_pred)
+                    elif name == "lpips":
+                        # Reconstruct predicted x0
+                        sqrt_alpha_hat = torch.sqrt(diffusion.alpha_hat[t])[:, None, None, None]
+                        sqrt_one_minus_alpha_hat = torch.sqrt(1. - diffusion.alpha_hat[t])[:, None, None, None]
+                        pred_x0 = (x_t - sqrt_one_minus_alpha_hat * pred_noise) / sqrt_alpha_hat
+                        pred_x0 = torch.tanh(pred_x0)
+                        # LPIPS loss between predicted x0 and original image
+                        l = lpips_loss_fn(pred_x0, images).mean()
                     else:
                         l = LOSS_REGISTRY[name](pred_noise, noise)
                     total_loss = total_loss + getattr(args, f"lambda_{name}") * l
@@ -167,10 +193,11 @@ def train(
             ema.update(model)
 
         avg_loss = running_loss / len(train_loader)
-        print(f"Epoch {epoch} | Train loss: {avg_loss:.6f}")
+        if is_main:
+            print(f"Epoch {epoch} | Train loss: {avg_loss:.6f}")
 
         # --- Visual Debugging: Save sample grid every save_interval epochs ---
-        if epoch % args.save_interval == 0:
+        if is_main and epoch % args.save_interval == 0:
             with torch.no_grad():
                 val_images, val_contours = next(iter(val_loader))
                 val_images = val_images.to(device)
@@ -181,7 +208,7 @@ def train(
 
         # Compute realism metrics on validation set
         metric_results = {}
-        if epoch % args.metrics_interval == 0:
+        if is_main and epoch % args.metrics_interval == 0:
             metrics.reset()
             model.eval()
             with torch.no_grad():
@@ -262,27 +289,29 @@ def train(
             model.train()
 
         # Live CSV logging
-        with open(metrics_csv, 'a', newline='') as f:
-            writer = csv.writer(f)
-            writer.writerow([
-                epoch,
-                metric_results.get('fid', ''),
-                metric_results.get('kid', ''),
-                metric_results.get('lpips', ''),
-                metric_results.get('ssim', ''),
-                avg_loss
-            ])
+        if is_main and epoch % args.metrics_interval == 0:
+            with open(metrics_csv, 'a', newline='') as f:
+                writer = csv.writer(f)
+                writer.writerow([
+                    epoch,
+                    metric_results.get('fid', ''),
+                    metric_results.get('kid', ''),
+                    metric_results.get('lpips', ''),
+                    metric_results.get('ssim', ''),
+                    avg_loss
+                ])
 
         # Console logging of all statistics
-        print(f"Epoch {epoch} | Statistics:")
-        print(f"  fid: {metric_results.get('fid', '')}")
-        print(f"  kid: {metric_results.get('kid', '')}")
-        print(f"  lpips: {metric_results.get('lpips', '')}")
-        print(f"  ssim: {metric_results.get('ssim', '')}")
-        print(f"  train_loss: {avg_loss}")
+        if is_main:
+            print(f"Epoch {epoch} | Statistics:")
+            print(f"  fid: {metric_results.get('fid', '')}")
+            print(f"  kid: {metric_results.get('kid', '')}")
+            print(f"  lpips: {metric_results.get('lpips', '')}")
+            print(f"  ssim: {metric_results.get('ssim', '')}")
+            print(f"  train_loss: {avg_loss}")
 
         # Save best model based on LPIPS
-        if epoch % args.metrics_interval == 0 and 'lpips' in metric_results:
+        if is_main and epoch % args.metrics_interval == 0 and 'lpips' in metric_results:
             current_lpips = metric_results.get('lpips', float('inf'))
             print(f"Epoch {epoch} | Val LPIPS: {current_lpips:.4f}  (best: {stopper.best_score:.4f})")
 
@@ -305,9 +334,11 @@ def train(
                 break
 
         # Periodic checkpoint
-        if epoch % args.save_interval == 0:
+        if is_main and epoch % args.save_interval == 0:
+            save_dir = "trained_models"
+            os.makedirs(save_dir, exist_ok=True)
             ckpt_path = os.path.join(
-                "trained_models", f"ddpmv2_model_{epoch:03d}.pt"
+                save_dir, f"ddpmv2_model_{epoch:03d}.pt"
             )
             torch.save({
                 "model_state":     model.state_dict(),
@@ -318,26 +349,32 @@ def train(
             }, ckpt_path)
             print(f"Saved checkpoint to {ckpt_path}")
 
-    # Final sampling with EMA weights
-    print("Loading EMA weights for sampling…")
-    ema.apply_shadow(model)
-    model.eval()
-    
-    # Get a single batch from the validation loader
-    try:
-        final_val_images, final_val_contours = next(iter(val_loader))
-    except StopIteration:
-        print("Validation loader is empty, cannot generate final samples.")
-        return None
+        if scheduler:
+            scheduler.step()
 
-    # Determine the sample batch size, ensuring it's not larger than the actual batch
-    sample_batch_size = min(args.sample_batch_size, final_val_contours.size(0))
-    
-    # Take the slice for sampling
-    sample_contour = final_val_contours[:sample_batch_size].to(device)
-    
-    # Generate the final samples
-    samples = diffusion.sample(model, sample_batch_size, sample_contour)
-    ema.restore(model)
+    # Final sampling with EMA weights
+    if is_main:
+        print("Loading EMA weights for sampling…")
+        ema.apply_shadow(model)
+        model.eval()
+        
+        # Get a single batch from the validation loader
+        try:
+            final_val_images, final_val_contours = next(iter(val_loader))
+        except StopIteration:
+            print("Validation loader is empty, cannot generate final samples.")
+            return None
+
+        # Determine the sample batch size, ensuring it's not larger than the actual batch
+        sample_batch_size = min(args.sample_batch_size, final_val_contours.size(0))
+        
+        # Take the slice for sampling
+        sample_contour = final_val_contours[:sample_batch_size].to(device)
+        
+        # Generate the final samples
+        samples = diffusion.sample(model, sample_batch_size, sample_contour)
+        ema.restore(model)
+    else:
+        samples = None
 
     return samples
