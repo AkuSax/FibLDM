@@ -12,7 +12,7 @@ import os
 from ddpm.losses import LOSS_REGISTRY
 from metrics import RealismMetrics
 import csv
-from utils import EarlyStopper, EMA
+from utils import EarlyStopper, EMA, save_debug_samples
 from metrics import KernelInceptionDistance
 
 
@@ -47,7 +47,7 @@ def evaluate_iou(model, dataloader, device, diffusion):
             
             # Convert to binary masks
             pred_masks = (samples > 0.5).float()
-            true_masks = (images > 0.5).float()
+            true_masks = (contours > 0.5).float()
             
             # Calculate IoU
             intersection = (pred_masks * true_masks).sum(dim=(1, 2, 3))
@@ -90,13 +90,12 @@ def train(
     model = torch.compile(model, backend="aot_eager")
 
     ema = EMA(model, decay=args.ema_decay)
-    stopper = EarlyStopper(patience=args.early_stop_patience)
+    stopper = EarlyStopper(patience=args.early_stop_patience, mode='min')
     if scaler is None:
         scaler = GradScaler()
     metrics = RealismMetrics(device=device)
 
     model.to(device)
-    best_iou = 0.0
 
     # Setup CSV logging
     metrics_csv = os.path.join(args.save_dir, 'metrics_log.csv')
@@ -110,6 +109,11 @@ def train(
         running_loss = 0.0
 
         for images, contour in tqdm(train_loader, desc=f"Epoch {epoch}"):
+            # Ensure we have a reasonable batch size for distributed training
+            if images.size(0) == 0:
+                print(f"Warning: Empty batch encountered, skipping...")
+                continue
+                
             images = images.to(device, non_blocking=True)
             contour = contour.to(device, non_blocking=True)
 
@@ -165,9 +169,15 @@ def train(
         avg_loss = running_loss / len(train_loader)
         print(f"Epoch {epoch} | Train loss: {avg_loss:.6f}")
 
-        # Validation
-        current_iou = evaluate_iou(model, val_loader, device, diffusion)
-        print(f"Epoch {epoch} | Val IoU: {current_iou:.4f}  (best: {best_iou:.4f})")
+        # --- Visual Debugging: Save sample grid every save_interval epochs ---
+        if epoch % args.save_interval == 0:
+            with torch.no_grad():
+                val_images, val_contours = next(iter(val_loader))
+                val_images = val_images.to(device)
+                val_contours = val_contours.to(device)
+                debug_samples = diffusion.sample(model, val_images.size(0), val_contours)
+                save_debug_samples(epoch, val_images, val_contours, debug_samples)
+                print(f"Saved debug samples for epoch {epoch}.")
 
         # Compute realism metrics on validation set
         metric_results = {}
@@ -185,7 +195,8 @@ def train(
                     metrics.fid.update(samples.repeat(1, 3, 1, 1) if samples.shape[1] == 1 else samples, real=False)
 
                     # For KID, create a new metric for each batch to avoid memory issues
-                    batch_kid = KernelInceptionDistance(subset_size=min(50, images.size(0)//2), normalize=True).to(device)
+                    subset_size = min(50, max(1, images.size(0)//2))  # Ensure subset_size is at least 1
+                    batch_kid = KernelInceptionDistance(subset_size=subset_size, normalize=True).to(device)
                     batch_kid.update(images.repeat(1, 3, 1, 1) if images.shape[1] == 1 else images, real=True)
                     batch_kid.update(samples.repeat(1, 3, 1, 1) if samples.shape[1] == 1 else samples, real=False)
                     kid_mean, kid_std = batch_kid.compute()
@@ -259,7 +270,6 @@ def train(
                 metric_results.get('kid', ''),
                 metric_results.get('lpips', ''),
                 metric_results.get('ssim', ''),
-                current_iou,
                 avg_loss
             ])
 
@@ -269,26 +279,30 @@ def train(
         print(f"  kid: {metric_results.get('kid', '')}")
         print(f"  lpips: {metric_results.get('lpips', '')}")
         print(f"  ssim: {metric_results.get('ssim', '')}")
-        print(f"  val_iou: {current_iou}")
         print(f"  train_loss: {avg_loss}")
 
-        # Save best model
-        if current_iou > best_iou:
-            best_iou = current_iou
-            torch.save({
-                "model_state":     model.state_dict(),
-                "ema_state":       ema.shadow,
-                "optimizer_state": optimizer.state_dict(),
-                "epoch":           epoch,
-                "best_iou":        best_iou,
-                "metrics":         metric_results if epoch % args.metrics_interval == 0 else None
-            }, "best_ddpm_model.pth")
-            print("Saved new best model.")
+        # Save best model based on LPIPS
+        if epoch % args.metrics_interval == 0 and 'lpips' in metric_results:
+            current_lpips = metric_results.get('lpips', float('inf'))
+            print(f"Epoch {epoch} | Val LPIPS: {current_lpips:.4f}  (best: {stopper.best_score:.4f})")
 
-        # Early stopping check
-        if stopper.early_stop(current_iou):
-            print(f"Early stopping triggered at epoch {epoch}")
-            break
+            # Save best model if LPIPS has improved
+            if current_lpips < stopper.best_score:
+                print(f"New best LPIPS score. Saving model...")
+                torch.save({
+                    "model_state":     model.state_dict(),
+                    "ema_state":       ema.shadow,
+                    "optimizer_state": optimizer.state_dict(),
+                    "epoch":           epoch,
+                    "best_lpips":      current_lpips,
+                    "metrics":         metric_results
+                }, "best_ddpm_model.pth")
+                print("Saved new best model.")
+
+            # Early stopping check
+            if stopper.early_stop(current_lpips):
+                print(f"Early stopping triggered at epoch {epoch} due to no improvement in LPIPS.")
+                break
 
         # Periodic checkpoint
         if epoch % args.save_interval == 0:
@@ -300,7 +314,6 @@ def train(
                 "optimizer_state": optimizer.state_dict(),
                 "epoch":           epoch,
                 "loss":            avg_loss,
-                "iou":             current_iou,
                 "metrics":         metric_results if epoch % args.metrics_interval == 0 else None
             }, ckpt_path)
             print(f"Saved checkpoint to {ckpt_path}")
@@ -309,8 +322,22 @@ def train(
     print("Loading EMA weights for sampling…")
     ema.apply_shadow(model)
     model.eval()
-    sample_contour = next(iter(val_loader))[1][:args.sample_batch_size].to(device)
-    samples = diffusion.sample(model, args.sample_batch_size, sample_contour)
+    
+    # Get a single batch from the validation loader
+    try:
+        final_val_images, final_val_contours = next(iter(val_loader))
+    except StopIteration:
+        print("Validation loader is empty, cannot generate final samples.")
+        return None
+
+    # Determine the sample batch size, ensuring it's not larger than the actual batch
+    sample_batch_size = min(args.sample_batch_size, final_val_contours.size(0))
+    
+    # Take the slice for sampling
+    sample_contour = final_val_contours[:sample_batch_size].to(device)
+    
+    # Generate the final samples
+    samples = diffusion.sample(model, sample_batch_size, sample_contour)
     ema.restore(model)
 
     return samples

@@ -1,13 +1,11 @@
 __pycache__/
+notebooks/
 *.py[cod]
 *.ipynb_checkpoints
-*.ipynb
 .env/
 *.pth
 *.pt
 *.ckpt
-trained_models/
-ema_samples.png
 /hot/
 /scratch/
 .vscode/

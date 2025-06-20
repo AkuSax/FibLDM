@@ -20,21 +20,43 @@ torch.set_float32_matmul_precision('high')
 def train_proc(args):
     # DDP setup
     local_rank = int(os.environ.get("LOCAL_RANK", 0))
-    torch.cuda.set_device(local_rank)
-    device = torch.device(f"cuda:{local_rank}")
-    dist.init_process_group(backend="nccl")
+    world_size = int(os.environ.get("WORLD_SIZE", 1))
+    
+    try:
+        torch.cuda.set_device(local_rank)
+        device = torch.device(f"cuda:{local_rank}")
+        dist.init_process_group(backend="nccl")
+        
+        if local_rank == 0:
+            print(f"[Rank {local_rank}] Starting distributed training with {world_size} GPUs")
+    except Exception as e:
+        print(f"[Rank {local_rank}] Failed to initialize distributed training: {e}")
+        raise
+
+    # Set seeds for reproducibility across processes
+    torch.manual_seed(42)
+    torch.cuda.manual_seed(42)
+    torch.cuda.manual_seed_all(42)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
 
     try:
+        if local_rank == 0:
+            print(f"[Rank {local_rank}] Loading dataset...")
+        
         # Data
         dataset = ContourDataset(args.csv_file, args.data_dir)
         train_size = int(0.8 * len(dataset))
         val_size = len(dataset) - train_size
+        
+        # Use a fixed generator for consistent splits across processes
+        generator = torch.Generator().manual_seed(42)
         train_ds, val_ds = torch.utils.data.random_split(
-            dataset, [train_size, val_size]
+            dataset, [train_size, val_size], generator=generator
         )
 
-        train_sampler = distributed.DistributedSampler(train_ds)
-        val_sampler   = distributed.DistributedSampler(val_ds, shuffle=False)
+        train_sampler = distributed.DistributedSampler(train_ds, seed=42)
+        val_sampler   = distributed.DistributedSampler(val_ds, shuffle=False, seed=42)
 
         train_loader = DataLoader(
             train_ds,
@@ -57,6 +79,9 @@ def train_proc(args):
             drop_last=True
         )
 
+        if local_rank == 0:
+            print(f"[Rank {local_rank}] Creating model...")
+        
         # Model + (optional) Discriminator
         model = get_model(
             args.arch,
@@ -92,6 +117,9 @@ def train_proc(args):
             optimizer.load_state_dict(ckpt["optimizer_state"])
             print(f"[Rank {local_rank}] Loaded model epoch {ckpt.get('epoch','?')}")
 
+        if local_rank == 0:
+            print(f"[Rank {local_rank}] Setting up diffusion...")
+        
         # Diffusion setup
         diffusion = Diffusion(
             noise_step=args.noise_steps,
@@ -106,6 +134,9 @@ def train_proc(args):
         diffusion.alpha     = 1.0 - diffusion.beta
         diffusion.alpha_hat = torch.cumprod(diffusion.alpha, dim=0)
 
+        if local_rank == 0:
+            print(f"[Rank {local_rank}] Starting training...")
+        
         # Training
         samples = ddpm_train(
             model=model,
@@ -130,9 +161,15 @@ def train_proc(args):
                 os.path.join(args.save_dir, "ema_samples.png"),
                 grid.permute(1, 2, 0).cpu().numpy()
             )
+    except Exception as e:
+        print(f"[Rank {local_rank}] Error during training: {e}")
+        import traceback
+        traceback.print_exc()
+        raise
     finally:
         # Cleanup
-        dist.destroy_process_group()
+        if dist.is_initialized():
+            dist.destroy_process_group()
 
 
 def main():

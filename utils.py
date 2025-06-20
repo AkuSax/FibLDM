@@ -1,6 +1,9 @@
 from scipy.io import loadmat
 import torch
 import mat73
+import torchvision.utils as vutils
+import os
+import matplotlib.pyplot as plt
 
 def readmat(filename, device=None):
     m = loadmat(filename)
@@ -60,6 +63,33 @@ def save_images(images, contour, sample_size, path, **kwargs):
     plt.tight_layout()
     fig.savefig(path, dpi=300)
     plt.close()
+
+def ensure_three_channels(x):
+    if x.shape[1] == 1:
+        return x.repeat(1, 3, 1, 1)
+    return x
+
+def save_debug_samples(epoch, real_images, real_contours, fake_samples, save_dir="debug_samples"):
+    """Saves a grid of real images, real contours, and generated samples."""
+    os.makedirs(save_dir, exist_ok=True)
+    # Ensure tensors are on CPU and in [0, 1] range for visualization
+    real_images = (real_images.clamp(-1, 1) + 1) / 2  # from [-1, 1] to [0, 1]
+    fake_samples = fake_samples.clamp(0, 1)  # Already in [0, 1]
+    n_samples = min(4, real_images.size(0))
+    # Ensure all are 3-channel
+    real_images_3c = ensure_three_channels(real_images[:n_samples].cpu())
+    real_contours_3c = ensure_three_channels(real_contours[:n_samples].cpu())
+    fake_samples_3c = ensure_three_channels(fake_samples[:n_samples].cpu())
+    comparison_grid = torch.cat([
+        real_images_3c,
+        real_contours_3c,
+        fake_samples_3c
+    ], dim=0)
+    grid = vutils.make_grid(comparison_grid, nrow=n_samples, normalize=False)
+    plt.imsave(
+        os.path.join(save_dir, f"epoch_{epoch:03d}.png"),
+        grid.permute(1, 2, 0).numpy()
+    )
 
 class EarlyStopper:
     def __init__(self, patience=7, min_delta=0, mode='min'):
