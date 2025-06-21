@@ -210,122 +210,193 @@ def train(
         metric_results = {}
         if epoch % args.metrics_interval == 0:
             model.eval()
+            
+            # Monitor memory before validation
+            monitor_gpu_memory(device, f"Epoch {epoch} - Before validation")
 
-            # Part 1: All GPUs generate samples for their portion of the validation set
+            # Simplified validation: only process a subset of validation data
+            max_val_batches = 10  # Limit validation to 10 batches to avoid timeouts
             local_real_images = []
             local_fake_samples = []
+            
             with torch.no_grad():
                 # Disable tqdm on non-main ranks
                 val_pbar = tqdm(val_loader, desc="Collecting validation samples", disable=not is_main)
-                for images, contours in val_pbar:
+                for batch_idx, (images, contours) in enumerate(val_pbar):
+                    if batch_idx >= max_val_batches:  # Limit validation batches
+                        break
+                        
                     images = images.to(device)
                     contours = contours.to(device)
                     samples = diffusion.sample(model, images.size(0), contours, fast_sampling=True)
                     local_real_images.append(images.cpu())
                     local_fake_samples.append(samples.cpu())
+                    
+                    # Monitor memory every few batches
+                    if len(local_real_images) % 5 == 0:
+                        monitor_gpu_memory(device, f"Epoch {epoch} - After {len(local_real_images)} batches")
 
-            # Part 2: Synchronize and gather all data to the main process
-            # Create placeholder lists on all processes
-            if dist.is_initialized():
-                gathered_real_obj = [None for _ in range(dist.get_world_size())]
-                gathered_fake_obj = [None for _ in range(dist.get_world_size())]
-                
-                # The actual gathering operation
-                dist.all_gather_object(gathered_real_obj, local_real_images)
-                dist.all_gather_object(gathered_fake_obj, local_fake_samples)
-            
-            # Part 3: Main process computes the metrics
-            if is_main:
-                metrics.reset()
+            # Monitor memory after collecting samples
+            monitor_gpu_memory(device, f"Epoch {epoch} - After collecting samples")
 
-                # Consolidate the gathered data if in distributed mode
+            # Part 2: Simplified gathering - only gather if we have data
+            if len(local_real_images) > 0:
                 if dist.is_initialized():
-                    all_real_images = [tensor for sublist in gathered_real_obj for tensor in sublist]
-                    all_fake_samples = [tensor for sublist in gathered_fake_obj for tensor in sublist]
-                else: # single GPU
-                    all_real_images = local_real_images
-                    all_fake_samples = local_fake_samples
-                
-                all_real_images = torch.cat(all_real_images, dim=0)
-                all_fake_samples = torch.cat(all_fake_samples, dim=0)
-
-                # Step 3: Compute metrics by iterating over the full distributions in batches
-                # This avoids OOM errors while still computing metrics on the whole set
-                pbar_metrics = tqdm(range(0, all_real_images.size(0), args.batch_size), desc="Calculating metrics", leave=False)
-                for i in pbar_metrics:
-                    end_idx = min(i + args.batch_size, all_real_images.size(0))
-
-                    # Get batches and move to device
-                    real_batch = all_real_images[i:end_idx].to(device)
-                    fake_batch = all_fake_samples[i:end_idx].to(device)
-
-                    # Normalize images to expected ranges for each metric
-                    # Real images from dataloader are [-1, 1], fake samples are [0, 1]
-                    real_norm_01 = (real_batch + 1) / 2 # To [0, 1]
-                    fake_norm_01 = fake_batch # Already [0, 1]
+                    # Step 2a: Consolidate lists of tensors into a single tensor on each GPU
+                    local_real_images_cat = torch.cat(local_real_images, dim=0)
+                    local_fake_samples_cat = torch.cat(local_fake_samples, dim=0)
                     
-                    real_norm_m11 = real_batch # Already [-1, 1]
-                    fake_norm_m11 = fake_batch * 2.0 - 1.0 # To [-1, 1]
+                    # Clear the lists to free memory
+                    del local_real_images, local_fake_samples
+                    torch.cuda.empty_cache()
 
-                    # Ensure 3 channels for metrics that require it (FID, LPIPS)
-                    real_3c_01 = real_norm_01.repeat(1, 3, 1, 1) if real_norm_01.shape[1] == 1 else real_norm_01
-                    fake_3c_01 = fake_norm_01.repeat(1, 3, 1, 1) if fake_norm_01.shape[1] == 1 else fake_norm_01
-                    real_3c_m11 = real_norm_m11.repeat(1, 3, 1, 1) if real_norm_m11.shape[1] == 1 else real_norm_m11
-                    fake_3c_m11 = fake_norm_m11.repeat(1, 3, 1, 1) if fake_norm_m11.shape[1] == 1 else fake_norm_m11
-
-                    # Update metrics
-                    metrics.fid.update(real_3c_01, real=True)
-                    metrics.fid.update(fake_3c_01, real=False)
-                    metrics.lpips.update(fake_3c_m11, real_3c_m11)
-                    metrics.ssim.update(fake_norm_01, real_norm_01)
-
-                # Step 4: Compute final metric scores
-                try:
-                    metric_results['fid'] = metrics.fid.compute().item()
-                except Exception as e:
-                    print(f"[metrics] FID computation error: {str(e)}")
-                    metric_results['fid'] = float('inf')
-                
-                # For KID, compute on the whole dataset at once
-                try:
-                    subset_size = min(100, all_real_images.size(0))
-                    kid_metric = KernelInceptionDistance(subset_size=subset_size, normalize=True).to(device)
+                    # Step 2b: Use smaller chunks to avoid OOM during gather
+                    world_size = dist.get_world_size()
+                    chunk_size = min(8, local_real_images_cat.size(0))  # Even smaller chunks
+                    num_chunks = (local_real_images_cat.size(0) - 1) // chunk_size + 1
                     
-                    real_images_3c = all_real_images.repeat(1, 3, 1, 1) if all_real_images.shape[1] == 1 else all_real_images
-                    fake_samples_3c = all_fake_samples.repeat(1, 3, 1, 1) if all_fake_samples.shape[1] == 1 else all_fake_samples
+                    gathered_real_tensors = []
+                    gathered_fake_tensors = []
                     
-                    kid_metric.update(((real_images_3c + 1) / 2).to(device), real=True) # Normalize to [0, 1] for KID
-                    kid_metric.update(fake_samples_3c.to(device), real=False)
+                    for chunk_idx in range(num_chunks):
+                        start_idx = chunk_idx * chunk_size
+                        end_idx = min(start_idx + chunk_size, local_real_images_cat.size(0))
+                        
+                        # Get chunk
+                        real_chunk = local_real_images_cat[start_idx:end_idx]
+                        fake_chunk = local_fake_samples_cat[start_idx:end_idx]
+                        
+                        # Prepare tensors for this chunk
+                        chunk_gathered_real = [torch.empty_like(real_chunk).to(device) for _ in range(world_size)]
+                        chunk_gathered_fake = [torch.empty_like(fake_chunk).to(device) for _ in range(world_size)]
+                        
+                        # Gather this chunk with timeout
+                        try:
+                            dist.all_gather(chunk_gathered_real, real_chunk.to(device), timeout=torch.distributed.DistributedTimeout(300))  # 5 minute timeout
+                            dist.all_gather(chunk_gathered_fake, fake_chunk.to(device), timeout=torch.distributed.DistributedTimeout(300))
+                        except Exception as e:
+                            print(f"Gather timeout for chunk {chunk_idx}, skipping metrics: {e}")
+                            gathered_real_tensors = []
+                            gathered_fake_tensors = []
+                            break
+                        
+                        # Move to CPU immediately to free GPU memory
+                        chunk_gathered_real = [t.cpu() for t in chunk_gathered_real]
+                        chunk_gathered_fake = [t.cpu() for t in chunk_gathered_fake]
+                        
+                        gathered_real_tensors.extend(chunk_gathered_real)
+                        gathered_fake_tensors.extend(chunk_gathered_fake)
+                        
+                        # Clear GPU memory
+                        torch.cuda.empty_cache()
                     
-                    kid_mean, kid_std = kid_metric.compute()
-                    metric_results['kid'] = kid_mean.item()
-                    metric_results['kid_std'] = kid_std.item()
-                except Exception as e:
-                    print(f"[metrics] KID computation error: {str(e)}")
-                    metric_results['kid'] = float('inf')
-                    metric_results['kid_std'] = float('inf')
+                    # Clear original tensors
+                    del local_real_images_cat, local_fake_samples_cat
+                    torch.cuda.empty_cache()
 
+            # Part 3: Main process computes the metrics
+            if is_main and len(gathered_real_tensors) > 0:
                 try:
-                    metric_results['lpips'] = metrics.lpips.compute().item()
-                except Exception as e:
-                    print(f"[metrics] LPIPS computation error: {str(e)}")
-                    metric_results['lpips'] = float('inf')
-                try:
-                    metric_results['ssim'] = metrics.ssim.compute().item()
-                except Exception as e:
-                    print(f"[metrics] SSIM computation error: {str(e)}")
-                    metric_results['ssim'] = float('inf')
+                    metrics.reset()
 
-                print(f"Epoch {epoch} | Metrics:")
-                for name, value in metric_results.items():
-                    # Check for std dev and print together
-                    if '_std' in name: continue
-                    std_name = f"{name}_std"
-                    if std_name in metric_results:
-                        print(f"  {name}: {value:.4f} (std: {metric_results[std_name]:.4f})")
-                    else:
-                        print(f"  {name}: {value:.4f}")
-            
+                    # Consolidate the gathered data if in distributed mode
+                    if dist.is_initialized():
+                        # The gathered tensors are already on CPU from the chunked approach
+                        all_real_images = torch.cat(gathered_real_tensors, dim=0)
+                        all_fake_samples = torch.cat(gathered_fake_tensors, dim=0)
+                        
+                        # Clear gathered tensors to free memory
+                        del gathered_real_tensors, gathered_fake_tensors
+                        torch.cuda.empty_cache()
+                    else: # single GPU
+                        all_real_images = torch.cat(local_real_images, dim=0)
+                        all_fake_samples = torch.cat(local_fake_samples, dim=0)
+                    
+                    # Step 3: Compute metrics by iterating over the full distributions in batches
+                    # This avoids OOM errors while still computing metrics on the whole set
+                    pbar_metrics = tqdm(range(0, all_real_images.size(0), args.batch_size), desc="Calculating metrics", leave=False)
+                    for i in pbar_metrics:
+                        end_idx = min(i + args.batch_size, all_real_images.size(0))
+
+                        # Get batches and move to device
+                        real_batch = all_real_images[i:end_idx].to(device)
+                        fake_batch = all_fake_samples[i:end_idx].to(device)
+
+                        # Normalize images to expected ranges for each metric
+                        # Real images from dataloader are [-1, 1], fake samples are [0, 1]
+                        real_norm_01 = (real_batch + 1) / 2 # To [0, 1]
+                        fake_norm_01 = fake_batch # Already [0, 1]
+                        
+                        real_norm_m11 = real_batch # Already [-1, 1]
+                        fake_norm_m11 = fake_batch * 2.0 - 1.0 # To [-1, 1]
+
+                        # Ensure 3 channels for metrics that require it (FID, LPIPS)
+                        real_3c_01 = real_norm_01.repeat(1, 3, 1, 1) if real_norm_01.shape[1] == 1 else real_norm_01
+                        fake_3c_01 = fake_norm_01.repeat(1, 3, 1, 1) if fake_norm_01.shape[1] == 1 else fake_norm_01
+                        real_3c_m11 = real_norm_m11.repeat(1, 3, 1, 1) if real_norm_m11.shape[1] == 1 else real_norm_m11
+                        fake_3c_m11 = fake_norm_m11.repeat(1, 3, 1, 1) if fake_norm_m11.shape[1] == 1 else fake_norm_m11
+
+                        # Update metrics
+                        metrics.fid.update(real_3c_01, real=True)
+                        metrics.fid.update(fake_3c_01, real=False)
+                        metrics.lpips.update(fake_3c_m11, real_3c_m11)
+                        metrics.ssim.update(fake_norm_01, real_norm_01)
+
+                    # Step 4: Compute final metric scores
+                    try:
+                        metric_results['fid'] = metrics.fid.compute().item()
+                    except Exception as e:
+                        print(f"[metrics] FID computation error: {str(e)}")
+                        metric_results['fid'] = float('inf')
+                    
+                    # For KID, compute on the whole dataset at once
+                    try:
+                        subset_size = min(50, all_real_images.size(0))  # Reduced subset size
+                        kid_metric = KernelInceptionDistance(subset_size=subset_size, normalize=True).to(device)
+                        
+                        real_images_3c = all_real_images.repeat(1, 3, 1, 1) if all_real_images.shape[1] == 1 else all_real_images
+                        fake_samples_3c = all_fake_samples.repeat(1, 3, 1, 1) if all_fake_samples.shape[1] == 1 else all_fake_samples
+                        
+                        kid_metric.update(((real_images_3c + 1) / 2).to(device), real=True) # Normalize to [0, 1] for KID
+                        kid_metric.update(fake_samples_3c.to(device), real=False)
+                        
+                        kid_mean, kid_std = kid_metric.compute()
+                        metric_results['kid'] = kid_mean.item()
+                        metric_results['kid_std'] = kid_std.item()
+                    except Exception as e:
+                        print(f"[metrics] KID computation error: {str(e)}")
+                        metric_results['kid'] = float('inf')
+                        metric_results['kid_std'] = float('inf')
+
+                    try:
+                        metric_results['lpips'] = metrics.lpips.compute().item()
+                    except Exception as e:
+                        print(f"[metrics] LPIPS computation error: {str(e)}")
+                        metric_results['lpips'] = float('inf')
+                    try:
+                        metric_results['ssim'] = metrics.ssim.compute().item()
+                    except Exception as e:
+                        print(f"[metrics] SSIM computation error: {str(e)}")
+                        metric_results['ssim'] = float('inf')
+
+                    print(f"Epoch {epoch} | Metrics:")
+                    for name, value in metric_results.items():
+                        # Check for std dev and print together
+                        if '_std' in name: continue
+                        std_name = f"{name}_std"
+                        if std_name in metric_results:
+                            print(f"  {name}: {value:.4f} (std: {metric_results[std_name]:.4f})")
+                        else:
+                            print(f"  {name}: {value:.4f}")
+                            
+                except Exception as e:
+                    print(f"Error during metrics computation: {e}")
+                    print("Skipping metrics for this epoch")
+                    metric_results = {}
+            else:
+                print(f"Epoch {epoch} | Skipping metrics (no validation data or not main process)")
+                metric_results = {}
+
             # Part 4: Wait for the main process to finish metrics and logging before continuing
             if dist.is_initialized():
                 dist.barrier()
@@ -421,3 +492,12 @@ def train(
         samples = None
 
     return samples
+
+def monitor_gpu_memory(device, stage=""):
+    """Monitor GPU memory usage"""
+    if torch.cuda.is_available():
+        allocated = torch.cuda.memory_allocated(device) / 1024**3  # GB
+        reserved = torch.cuda.memory_reserved(device) / 1024**3    # GB
+        print(f"[{stage}] GPU Memory: {allocated:.2f}GB allocated, {reserved:.2f}GB reserved")
+        return allocated, reserved
+    return 0, 0

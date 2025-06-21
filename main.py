@@ -23,9 +23,14 @@ def train_proc(args):
     local_rank = int(os.environ.get("LOCAL_RANK", 0))
     world_size = int(os.environ.get("WORLD_SIZE", 1))
     
+    # Set basic NCCL timeout to prevent timeouts during validation
+    os.environ['NCCL_TIMEOUT'] = '1800'  # 30 minutes timeout
+    
     try:
         torch.cuda.set_device(local_rank)
         device = torch.device(f"cuda:{local_rank}")
+        
+        # Initialize process group
         dist.init_process_group(backend="nccl")
         
         if local_rank == 0:
@@ -59,13 +64,16 @@ def train_proc(args):
         train_sampler = distributed.DistributedSampler(train_ds, seed=42)
         val_sampler   = distributed.DistributedSampler(val_ds, shuffle=False, seed=42)
 
+        # Reduce num_workers to prevent memory issues
+        num_workers = min(args.num_workers, 4)  # Cap at 4 workers
+        
         train_loader = DataLoader(
             train_ds,
             batch_size=args.batch_size,
             sampler=train_sampler,
-            num_workers=args.num_workers,
+            num_workers=num_workers,
             pin_memory=True,
-            prefetch_factor=16,
+            prefetch_factor=2,  # Reduced from 16
             persistent_workers=True,
             drop_last=True
         )
@@ -73,11 +81,11 @@ def train_proc(args):
             val_ds,
             batch_size=args.batch_size,
             sampler=val_sampler,
-            num_workers=args.num_workers,
+            num_workers=num_workers,
             pin_memory=True,
-            prefetch_factor=16,
+            prefetch_factor=2,  # Reduced from 16
             persistent_workers=True,
-            drop_last=True
+            drop_last=False
         )
 
         if local_rank == 0:
