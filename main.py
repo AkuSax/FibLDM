@@ -52,7 +52,7 @@ def train_proc(args):
         
         # Data
         dataset = ContourDataset(args.csv_file, args.data_dir)
-        train_size = int(0.8 * len(dataset))
+        train_size = int(0.9 * len(dataset))
         val_size = len(dataset) - train_size
         
         # Use a fixed generator for consistent splits across processes
@@ -85,7 +85,7 @@ def train_proc(args):
             pin_memory=True,
             prefetch_factor=2,  # Reduced from 16
             persistent_workers=True,
-            drop_last=False
+            drop_last=True
         )
 
         if local_rank == 0:
@@ -93,7 +93,6 @@ def train_proc(args):
         
         # Model + (optional) Discriminator
         model = get_model(
-            args.arch,
             img_size=args.image_size,
             in_channels=args.in_channels,
             out_channels=args.out_channels,
@@ -198,8 +197,6 @@ def main():
     parser.add_argument("--lr",          type=float, default=3e-4)
     parser.add_argument("--lr_d",        type=float, default=1e-4)
     parser.add_argument("--epochs",      dest="num_epochs", type=int, default=1000)
-    parser.add_argument("--arch",        type=str, default="unet2d",
-                        choices=["unet2d", "swin_unet", "mask2former"])
     parser.add_argument("--encoder_ckpt",type=str, default=None)
     parser.add_argument("--save_interval",      type=int, default=30)
     parser.add_argument("--metrics_interval",   type=int, default=5,
@@ -213,6 +210,8 @@ def main():
                         help="Enable torch.compile() optimization")
     parser.add_argument("--in_channels", type=int, default=2)
     parser.add_argument("--out_channels",type=int, default=1)
+    parser.add_argument("--no_sync_on_compute", action="store_true",
+                        help="Disable torchmetrics sync on compute")
     
     # Loss configuration
     parser.add_argument(

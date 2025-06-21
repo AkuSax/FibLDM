@@ -8,21 +8,22 @@ from torchmetrics.utilities.data import dim_zero_cat
 import numpy as np
 
 class RealismMetrics:
-    def __init__(self, device='cuda'):
+    def __init__(self, device='cuda', sync_on_compute=True):
         """Initialize metrics."""
         self.device = device
+        self.sync_on_compute = sync_on_compute
         
         # Initialize FID metric
-        self.fid = FrechetInceptionDistance(normalize=True).to(device)
+        self.fid = FrechetInceptionDistance(normalize=True, sync_on_compute=sync_on_compute).to(device)
         
         # Initialize KID metric with proper subset_size
-        self.kid = KernelInceptionDistance(subset_size=50, normalize=True).to(device)
+        self.kid = KernelInceptionDistance(subset_size=50, normalize=True, sync_on_compute=sync_on_compute).to(device)
         
         # Initialize LPIPS metric
-        self.lpips = LearnedPerceptualImagePatchSimilarity(net_type='vgg').to(device)
+        self.lpips = LearnedPerceptualImagePatchSimilarity(net_type='vgg', sync_on_compute=sync_on_compute).to(device)
         
         # Initialize SSIM metric
-        self.ssim = StructuralSimilarityIndexMeasure().to(device)
+        self.ssim = StructuralSimilarityIndexMeasure(sync_on_compute=sync_on_compute).to(device)
         
     def compute_metrics(self, real_images, fake_images, same_mask_images=None):
         """Compute all metrics between real and fake images."""
@@ -70,7 +71,7 @@ class RealismMetrics:
             subset_size = min(50, min_batch // 2)  # Use half of batch size, max 50
             if subset_size < 1:
                 raise ValueError("Batch size too small for KID computation")
-            self.kid = KernelInceptionDistance(subset_size=subset_size, normalize=True).to(real_3ch.device)
+            self.kid = KernelInceptionDistance(subset_size=subset_size, normalize=True, sync_on_compute=self.sync_on_compute).to(real_3ch.device)
             # Update with real and fake images
             self.kid.update(real_3ch, real=True)  # Use True instead of tensor
             self.kid.update(fake_3ch, real=False)  # Use False instead of tensor
@@ -155,7 +156,7 @@ class RealismMetrics:
                 raise ValueError("Batch size too small for KID computation")
                 
             # Create new KID metric with appropriate subset size
-            kid_metric = KernelInceptionDistance(subset_size=subset_size, normalize=True).to(real_3ch.device)
+            kid_metric = KernelInceptionDistance(subset_size=subset_size, normalize=True, sync_on_compute=self.sync_on_compute).to(real_3ch.device)
             # Update with real and fake images
             kid_metric.update(real_3ch, real=True)
             kid_metric.update(fake_3ch, real=False)
