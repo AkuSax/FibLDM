@@ -38,7 +38,7 @@ nohup torchrun --nproc_per_node=2 main.py \
     --save_interval 25 \
     --losses mse,lpips \
     --lambda_mse 1.0 \
-    --lambda_lpips 10.0 \
+    --lambda_lpips 50.0 \
     --no_sync_on_compute \
     --save_dir ./model_runs/full_run > "$LOG_FILE" 2>&1 &
 

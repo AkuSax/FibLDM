@@ -419,6 +419,10 @@ def train(
     else:
         samples = None
 
+    # Add a barrier here to ensure all processes wait for rank 0 to finish sampling
+    if dist.is_initialized():
+        dist.barrier()
+
     return samples
 
 

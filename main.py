@@ -8,7 +8,7 @@ from torch.utils.data import DataLoader, distributed
 import torchvision.utils as vutils
 import matplotlib.pyplot as plt
 from ddpm.diffusion import Diffusion
-from models import get_model
+from unet2d import UNet2D
 from dataset import ContourDataset
 from discriminator import PatchGANDiscriminator
 from train_utils import train as ddpm_train, cosine_beta_schedule
@@ -92,7 +92,7 @@ def train_proc(args):
             print(f"[Rank {local_rank}] Creating model...")
         
         # Model + (optional) Discriminator
-        model = get_model(
+        model = UNet2D(
             img_size=args.image_size,
             in_channels=args.in_channels,
             out_channels=args.out_channels,
@@ -203,7 +203,7 @@ def main():
                         help="Interval in epochs to compute realism metrics")
     parser.add_argument("--sample_batch_size",  type=int, default=16)
     parser.add_argument("--ema_decay",          type=float, default=0.9999)
-    parser.add_argument("--early_stop_patience",type=int,   default=10)
+    parser.add_argument("--early_stop_patience",type=int,   default=5)
     parser.add_argument("--use_amp",            action="store_true",
                         help="Enable mixed-precision training")
     parser.add_argument("--use_compile",        action="store_true",
