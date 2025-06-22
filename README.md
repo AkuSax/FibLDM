@@ -44,6 +44,8 @@ The codebase is built for performance and scalability, featuring:
 ---
 
 ## Directory Structure
+
+```
 DDPM-v2/
 ├── ddpm/
 │   ├── init.py
@@ -59,7 +61,7 @@ DDPM-v2/
 ├── metrics.py                  # Realism metrics (FID, KID, LPIPS, SSIM)
 ├── utils.py                    # Helper classes like EarlyStopper and EMA
 └── requirements.txt            # Project dependencies
-
+```
 ---
 
 ## Key Files
