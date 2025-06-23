@@ -4,7 +4,7 @@ import torch.nn as nn
 class VAE(nn.Module):
     def __init__(self, in_channels=1, latent_dim=8):
         super().__init__()
-        # A simple convolutional encoder
+        # A simple convolutional encoder for 16x16 latent
         self.encoder = nn.Sequential(
             nn.Conv2d(in_channels, 64, kernel_size=4, stride=2, padding=1), # 256 -> 128
             nn.ReLU(),
@@ -12,18 +12,12 @@ class VAE(nn.Module):
             nn.ReLU(),
             nn.Conv2d(128, 256, kernel_size=4, stride=2, padding=1), # 64 -> 32
             nn.ReLU(),
-            nn.Conv2d(256, 512, kernel_size=4, stride=2, padding=1), # 32 -> 16
-            nn.ReLU(),
-            # The output of this layer is (batch_size, latent_dim * 2, 16, 16)
-            nn.Conv2d(512, latent_dim * 2, kernel_size=4, stride=2, padding=1) # 16 -> 8
+            nn.Conv2d(256, latent_dim * 2, kernel_size=4, stride=2, padding=1) # 32 -> 16
         )
 
         # A corresponding decoder
         self.decoder = nn.Sequential(
-            # Input is (batch_size, latent_dim, 8, 8)
-            nn.ConvTranspose2d(latent_dim, 512, kernel_size=4, stride=2, padding=1), # 8 -> 16
-            nn.ReLU(),
-            nn.ConvTranspose2d(512, 256, kernel_size=4, stride=2, padding=1), # 16 -> 32
+            nn.ConvTranspose2d(latent_dim, 256, kernel_size=4, stride=2, padding=1), # 16 -> 32
             nn.ReLU(),
             nn.ConvTranspose2d(256, 128, kernel_size=4, stride=2, padding=1), # 32 -> 64
             nn.ReLU(),

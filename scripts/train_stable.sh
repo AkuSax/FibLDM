@@ -11,7 +11,7 @@ export OMP_NUM_THREADS=1
 
 # Generate timestamp for unique log file
 TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
-LOG_FILE="logs/training_${TIMESTAMP}.log"
+LOG_FILE="../logs/training_${TIMESTAMP}.log"
 
 # Clear any existing processes
 echo "Stopping any existing training processes..."
@@ -26,7 +26,7 @@ echo "Log file: $LOG_FILE"
 echo "To monitor progress: tail -f $LOG_FILE"
 
 # Run with nohup for background execution
-nohup torchrun --nproc_per_node=2 main.py \
+nohup torchrun --nproc_per_node=2 ../main.py \
     --data_dir /hot/Yi-Kuan/Fibrosis/ \
     --csv_file /hot/Yi-Kuan/Fibrosis/label.csv \
     --batch_size 24 \
@@ -40,13 +40,13 @@ nohup torchrun --nproc_per_node=2 main.py \
     --lambda_mse 1.0 \
     --lambda_lpips 50.0 \
     --no_sync_on_compute \
-    --save_dir ./model_runs/full_run > "$LOG_FILE" 2>&1 &
+    --save_dir ../model_runs/full_run > "$LOG_FILE" 2>&1 &
 
 # Get the process ID
 TRAINING_PID=$!
 echo "Training started with PID: $TRAINING_PID"
-echo "PID saved to: logs/training_${TIMESTAMP}.pid"
-echo $TRAINING_PID > "logs/training_${TIMESTAMP}.pid"
+echo "PID saved to: ../logs/training_${TIMESTAMP}.pid"
+echo $TRAINING_PID > "../logs/training_${TIMESTAMP}.pid"
 
 echo ""
 echo "=== Training Started Successfully ==="

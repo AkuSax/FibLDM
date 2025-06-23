@@ -15,9 +15,46 @@ from train_utils import train as ddpm_train, cosine_beta_schedule
 from torch.optim.lr_scheduler import CosineAnnealingLR
 import numpy as np
 import logging
+from logging.handlers import RotatingFileHandler
 
 torch.backends.cudnn.benchmark = True
 torch.set_float32_matmul_precision('high')
+
+
+def setup_logging(save_dir):
+    """Setup logging configuration with rotation to prevent massive log files."""
+    os.makedirs(save_dir, exist_ok=True)
+    
+    # Configure logging with rotation
+    # Create a rotating file handler (max 10MB per file, keep 5 backup files)
+    file_handler = RotatingFileHandler(
+        os.path.join(save_dir, 'training.log'),
+        maxBytes=10*1024*1024,  # 10MB
+        backupCount=5
+    )
+    
+    # Create a console handler
+    console_handler = logging.StreamHandler()
+    
+    # Create formatters
+    file_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+    console_formatter = logging.Formatter('%(message)s')  # Simpler for console
+    
+    # Set formatters
+    file_handler.setFormatter(file_formatter)
+    console_handler.setFormatter(console_formatter)
+    
+    # Configure root logger
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.INFO)
+    
+    # Remove any existing handlers to avoid duplicates
+    for handler in root_logger.handlers[:]:
+        root_logger.removeHandler(handler)
+    
+    # Add our handlers
+    root_logger.addHandler(file_handler)
+    root_logger.addHandler(console_handler)
 
 
 def train_proc(args):
@@ -36,9 +73,9 @@ def train_proc(args):
         dist.init_process_group(backend="nccl")
         
         if local_rank == 0:
-            print(f"[Rank {local_rank}] Starting distributed training with {world_size} GPUs")
+            logging.info(f"[Rank {local_rank}] Starting distributed training with {world_size} GPUs")
     except Exception as e:
-        print(f"[Rank {local_rank}] Failed to initialize distributed training: {e}")
+        logging.error(f"[Rank {local_rank}] Failed to initialize distributed training: {e}")
         raise
 
     # Set seeds for reproducibility across processes
@@ -50,7 +87,7 @@ def train_proc(args):
 
     try:
         if local_rank == 0:
-            print(f"[Rank {local_rank}] Loading dataset...")
+            logging.info(f"[Rank {local_rank}] Loading dataset...")
         
         # Data
         if args.dataset_type == 'image':
@@ -103,7 +140,7 @@ def train_proc(args):
         )
 
         if local_rank == 0:
-            print(f"[Rank {local_rank}] Creating model...")
+            logging.info(f"[Rank {local_rank}] Creating model...")
         
         # Model + (optional) Discriminator
         if args.dataset_type == 'latent':
@@ -142,25 +179,21 @@ def train_proc(args):
             ckpt = torch.load(args.load_model, map_location=device)
             model.load_state_dict(ckpt["model_state"])
             optimizer.load_state_dict(ckpt["optimizer_state"])
-            print(f"[Rank {local_rank}] Loaded model epoch {ckpt.get('epoch','?')}")
+            logging.info(f"[Rank {local_rank}] Loaded model epoch {ckpt.get('epoch','?')}")
 
         if local_rank == 0:
-            print(f"[Rank {local_rank}] Setting up diffusion...")
+            logging.info(f"[Rank {local_rank}] Setting up diffusion...")
         
         # Diffusion setup
         diffusion = Diffusion(
+            noise_step=args.noise_steps,
             img_size=current_img_size,
             device=device,
             schedule_name=args.noise_schedule
         )
-        diffusion.betas = cosine_beta_schedule(
-            diffusion.noise_step
-        ).to(device)
-        diffusion.alpha     = 1.0 - diffusion.beta
-        diffusion.alpha_hat = torch.cumprod(diffusion.alpha, dim=0)
 
         if local_rank == 0:
-            print(f"[Rank {local_rank}] Starting training...")
+            logging.info(f"[Rank {local_rank}] Starting training...")
         
         # Training
         samples = ddpm_train(
@@ -187,7 +220,7 @@ def train_proc(args):
                 grid.permute(1, 2, 0).cpu().numpy()
             )
     except Exception as e:
-        print(f"[Rank {local_rank}] Error during training: {e}")
+        logging.error(f"[Rank {local_rank}] Error during training: {e}")
         import traceback
         traceback.print_exc()
         raise

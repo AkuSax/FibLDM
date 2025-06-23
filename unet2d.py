@@ -237,6 +237,61 @@ class UNet2D(nn.Module):
         return self.outc(x)
 
 
+class UNet2DLatent(nn.Module):
+    """
+    Simplified U-Net for latent space (16x16 inputs)
+    3 downsampling layers for 16x16 input (256->128->64->32->16)
+    """
+    def __init__(self, img_size=16, in_channels=9, out_channels=8):
+        super().__init__()
+        # Time embedding
+        self.time_mlp = nn.Sequential(
+            SinusoidalPositionEmbeddings(img_size * img_size), # Embed based on latent size
+            nn.Linear(img_size * img_size, img_size * img_size),
+            nn.GELU(),
+        )
+
+        self.inc = DoubleConv(in_channels, 64)
+        self.down1 = nn.Sequential(nn.MaxPool2d(2), DoubleConv(64, 128)) # 16x16 -> 8x8
+        self.down2 = nn.Sequential(nn.MaxPool2d(2), DoubleConv(128, 256)) # 8x8 -> 4x4
+        self.down3 = nn.Sequential(nn.MaxPool2d(2), DoubleConv(256, 512)) # 4x4 -> 2x2
+        
+        self.bot1 = DoubleConv(512, 1024)
+        
+        self.up1 = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True)
+        self.upconv1 = DoubleConv(1024 + 512, 512)
+        
+        self.up2 = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True)
+        self.upconv2 = DoubleConv(512 + 256, 256)
+        
+        self.up3 = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True)
+        self.upconv3 = DoubleConv(256 + 128, 128)
+        
+        self.outc = nn.Conv2d(128, out_channels, kernel_size=1)
+
+    def forward(self, x, t):
+        x1 = self.inc(x)
+        x2 = self.down1(x1)
+        x3 = self.down2(x2)
+        x4 = self.down3(x3)
+        
+        x4 = self.bot1(x4)
+
+        x = self.up1(x4)
+        x = torch.cat([x, x3], dim=1)
+        x = self.upconv1(x)
+        
+        x = self.up2(x)
+        x = torch.cat([x, x2], dim=1)
+        x = self.upconv2(x)
+        
+        x = self.up3(x)
+        x = torch.cat([x, x1], dim=1)
+        x = self.upconv3(x)
+
+        return self.outc(x)
+
+
 class TD_Paint:
     def __init__(self, noise_step=1000, img_size = 256, device='cuda'):
         self.noise_step = noise_step
@@ -378,3 +433,24 @@ class TD_Paint_v2: # adding clean image as initial condition
         model.train()
         x_tau = (x_tau.clamp(-1,1)+1)/2
         return x_tau
+
+
+def get_model(img_size=256, in_channels=1, out_channels=1, time_dim=None, pretrained_ckpt=None):
+    """
+    Factory function to create the appropriate U-Net model based on input size.
+    For latent space (8x8), use the simplified UNet2DLatent.
+    For image space (256x256), use the full UNet2D.
+    """
+    if img_size <= 16:  # Latent space
+        return UNet2DLatent(
+            img_size=img_size,
+            in_channels=in_channels,
+            out_channels=out_channels
+        )
+    else:  # Image space
+        return UNet2D(
+            img_size=img_size,
+            in_channels=in_channels,
+            out_channels=out_channels,
+            pretrained_ckpt=pretrained_ckpt
+        )

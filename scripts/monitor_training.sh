@@ -3,8 +3,8 @@
 # Training monitoring script
 
 # Find the most recent training log
-LATEST_LOG=$(ls -t logs/training_*.log 2>/dev/null | head -n1)
-LATEST_PID=$(ls -t logs/training_*.pid 2>/dev/null | head -n1)
+LATEST_LOG=$(ls -t ../logs/training_*.log 2>/dev/null | head -n1)
+LATEST_PID=$(ls -t ../logs/training_*.pid 2>/dev/null | head -n1)
 
 if [ -z "$LATEST_LOG" ]; then
     echo "No training logs found. Make sure training is running."

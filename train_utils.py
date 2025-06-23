@@ -17,6 +17,7 @@ from utils import EarlyStopper, EMA, save_debug_samples
 from metrics import KernelInceptionDistance
 import lpips
 import torchvision.utils as vutils
+import logging
 
 
 def cosine_beta_schedule(timesteps: int, s: float = 0.008) -> torch.FloatTensor:
@@ -91,7 +92,7 @@ def train(
 
     # --- VAE and EMA setup ---
     vae = None
-    if is_main:
+    if is_main and hasattr(args, 'vae_checkpoint') and args.vae_checkpoint:
         # VAE is only needed on the main process for decoding samples for visualization
         print("Loading VAE for decoding...")
         from autoencoder import VAE # Local import
@@ -121,10 +122,15 @@ def train(
             train_loader.sampler.set_epoch(epoch)
             
         running_loss = 0.0
-        pbar = tqdm(train_loader, desc=f"Epoch {epoch}", disable=not is_main)
+        
+        # Use a custom progress bar that doesn't spam logs
+        if is_main:
+            pbar = tqdm(train_loader, desc=f"Epoch {epoch}", leave=False, ncols=100)
+        else:
+            pbar = train_loader
         
         # Note: The dataloader now yields (latents, contours)
-        for latents, contour in pbar:
+        for batch_idx, (latents, contour) in enumerate(pbar):
             if latents.size(0) == 0: continue
                 
             latents = latents.to(device, non_blocking=True)
@@ -148,15 +154,20 @@ def train(
 
             running_loss += total_loss.item()
             ema.update(model)
+            
+            # Update progress bar with current loss (only on main process)
+            if is_main and batch_idx % 50 == 0:  # Update every 50 batches to reduce spam
+                current_loss = total_loss.item()
+                pbar.set_postfix({'loss': f'{current_loss:.4f}'})
 
         avg_loss = running_loss / len(train_loader)
         if is_main:
-            print(f"Epoch {epoch} | Train loss: {avg_loss:.6f}")
+            logging.info(f"Epoch {epoch} | Train loss: {avg_loss:.6f}")
 
         # --- Visual Debugging: Sample, Decode, and Save ---
         if is_main and epoch % args.save_interval == 0:
             if vae is None:
-                print("Warning: VAE not available on main process, skipping debug sample generation.")
+                logging.warning("VAE not available on main process, skipping debug sample generation.")
             else:
                 with torch.no_grad():
                     # Get a batch of validation latents and (downsampled) contours
@@ -164,13 +175,14 @@ def train(
                     val_latents = val_latents.to(device)
                     val_contours_downsampled = val_contours_downsampled.to(device)
 
-                    print("Generating debug samples...")
+                    logging.info("Generating debug samples...")
                     # 1. Generate new clean latents with the LDM
                     ema.ema_model.eval()
                     generated_latents = diffusion.sample(
                         ema.ema_model, 
                         n=val_latents.size(0), 
-                        condition=val_contours_downsampled
+                        condition=val_contours_downsampled,
+                        latent_dim=args.latent_dim
                     )
                     
                     # 2. Decode both original and generated latents into images
@@ -186,20 +198,20 @@ def train(
                     comparison_grid = torch.cat([original_recons, generated_images])
                     vutils.save_image(comparison_grid, os.path.join(save_path, f"comparison_{epoch:04d}.png"), nrow=val_latents.size(0))
                     
-                    print(f"Saved decoded debug samples for epoch {epoch}.")
+                    logging.info(f"Saved decoded debug samples for epoch {epoch}.")
 
         # --- Metrics Calculation on Validation Set ---
         metric_results = {}
         if is_main and epoch % args.metrics_interval == 0:
             if vae is None:
-                print("Warning: VAE not available, skipping metrics calculation.")
+                logging.warning("VAE not available, skipping metrics calculation.")
             else:
                 model.eval()
                 
                 # For metrics, we need to compare generated images to the *true* original images.
                 # We need a separate loader for the original, high-resolution image dataset.
                 from dataset import ContourDataset # Re-import for validation
-                val_img_dataset = ContourDataset(csv_file=os.path.join(args.data_path, args.csv_path), img_dir=args.data_path, istransform=False)
+                val_img_dataset = ContourDataset(label_file=os.path.join(args.data_path, args.csv_path), img_dir=args.data_path, istransform=False)
                 # Important: Use a DistributedSampler for the validation image loader as well
                 val_img_sampler = torch.utils.data.distributed.DistributedSampler(val_img_dataset, shuffle=False)
                 val_img_loader = torch.utils.data.DataLoader(val_img_dataset, batch_size=args.sample_batch_size, sampler=val_img_sampler)
@@ -208,15 +220,18 @@ def train(
                 local_fake_samples_decoded = []
 
                 with torch.no_grad():
-                    val_pbar = tqdm(val_img_loader, desc=f"Epoch {epoch} Calculating Metrics", disable=not is_main)
-                    for images, contours in val_pbar:
+                    # Use a simple progress indicator instead of verbose tqdm
+                    if is_main:
+                        logging.info(f"Epoch {epoch}: Calculating metrics...")
+                    
+                    for images, contours in val_img_loader:
                         images = images.to(device)
                         contours = contours.to(device)
                         
                         contours_downsampled = F.interpolate(contours, size=(args.latent_size, args.latent_size), mode='nearest')
 
                         # Generate latents from contour condition and decode them to images
-                        samples_latent = diffusion.sample(model, images.size(0), contours_downsampled, fast_sampling=True)
+                        samples_latent = diffusion.sample(model, images.size(0), contours_downsampled, fast_sampling=True, latent_dim=args.latent_dim)
                         samples_decoded = vae.decode(samples_latent)
 
                         local_real_images.append(images.cpu())
@@ -226,7 +241,7 @@ def train(
                 gathered_real = [None for _ in range(dist.get_world_size())]
                 gathered_fake = [None for _ in range(dist.get_world_size())]
                 dist.all_gather_object(gathered_real, local_real_images)
-                dist.all_gather_object(gathered_fake, local_fake_samples)
+                dist.all_gather_object(gathered_fake, local_fake_samples_decoded)
                 
                 if is_main:
                     all_real_images = [item for sublist in gathered_real for item in sublist]
@@ -236,11 +251,11 @@ def train(
                         all_real_images = torch.cat(all_real_images, dim=0)
                         all_fake_samples = torch.cat(all_fake_samples, dim=0)
 
-                        print(f"Calculating realism metrics on {len(all_real_images)} images...")
+                        logging.info(f"Calculating realism metrics on {len(all_real_images)} images...")
                         metric_results = metrics.compute(all_real_images, all_fake_samples)
-                        print(f"Epoch {epoch} Metrics: {metric_results}")
+                        logging.info(f"Epoch {epoch} Metrics: {metric_results}")
                     else:
-                        print("No images processed for metrics, skipping.")
+                        logging.warning("No images processed for metrics, skipping.")
 
 
         # --- Logging and Early Stopping (Main Process Only) ---
@@ -260,7 +275,7 @@ def train(
             # Check for early stopping
             validation_metric = metric_results.get('lpips', float('inf')) # Using LPIPS as stopping criterion
             if stopper.early_stop(validation_metric):
-                print(f"Early stopping triggered at epoch {epoch} based on validation LPIPS.")
+                logging.info(f"Early stopping triggered at epoch {epoch} based on validation LPIPS.")
                 break # Exit training loop
     
     # Final barrier to ensure all processes exit cleanly after training loop

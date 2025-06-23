@@ -5,8 +5,8 @@
 # encode the dataset into a latent space and to decode generated latents
 # back into full-resolution images.
 
-python train_autoencoder.py \
-    --csv_file ./small_label.csv \
+python ../train_autoencoder.py \
+    --csv_file ../small_label.csv \
     --data_dir /hot/Yi-Kuan/Fibrosis/ \
     --save_dir vae_run_1 \
     --epochs 100 \
