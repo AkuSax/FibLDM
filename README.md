@@ -35,7 +35,7 @@ First, train the VAE on the full-resolution images. This script will save the be
 ```bash
 # From the project root, run the VAE training script.
 # Make sure to provide the correct paths to your data.
-./train_vae.sh
+./scripts/train_vae.sh
 ```
 *This will create a `vae_run_1/` directory containing the `vae_best.pth` model checkpoint.*
 
@@ -60,15 +60,27 @@ Finally, train the U-Net in the latent space. This script uses DDP for multi-GPU
 ```bash
 # Use your existing training script, now configured for LDM.
 # Ensure arguments in train_stable.sh point to the latent data.
-./train_stable.sh
+./scripts/train_stable.sh
 ```
-*This script should be configured to run `main.py` with `dataset_type=latent` and other relevant LDM arguments.*
+*This script launches a background training process and saves the PID. Logs are saved to the `logs/` directory.*
+
+### Monitoring Training
+You can monitor the training progress in real-time using the provided monitoring script.
+
+```bash
+# View the latest training status, logs, and GPU usage.
+./scripts/monitor_training.sh
+```
 
 ---
 
 ## Directory Structure
 ```
 FibLDM/
+├── scripts/
+│   ├── train_vae.sh
+│   ├── train_stable.sh
+│   └── monitor_training.sh
 ├── ddpm/
 │   ├── diffusion.py        # Core DDPM forward/reverse process logic
 │   └── losses.py           # Loss function registry
