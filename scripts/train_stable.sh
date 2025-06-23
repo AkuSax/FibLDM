@@ -9,6 +9,13 @@ export NCCL_IB_TC=41
 export CUDA_VISIBLE_DEVICES=0,1
 export OMP_NUM_THREADS=1
 
+# Set a default data directory
+DEFAULT_DATA_DIR="/hot/Yi-Kuan/Fibrosis/"
+# Use the first argument as the data directory, or the default if not provided
+DATA_DIR="${1:-$DEFAULT_DATA_DIR}"
+
+echo "Using data directory: $DATA_DIR"
+
 # Generate timestamp for unique log file
 TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
 LOG_FILE="../logs/training_${TIMESTAMP}.log"
@@ -27,8 +34,8 @@ echo "To monitor progress: tail -f $LOG_FILE"
 
 # Run with nohup for background execution
 nohup torchrun --nproc_per_node=2 ../main.py \
-    --data_dir /hot/Yi-Kuan/Fibrosis/ \
-    --csv_file /hot/Yi-Kuan/Fibrosis/label.csv \
+    --data_dir "$DATA_DIR" \
+    --csv_file "${DATA_DIR}/label.csv" \
     --batch_size 24 \
     --num_workers 4 \
     --epochs 500 \

@@ -11,7 +11,7 @@ from ddpm.diffusion import Diffusion
 from unet2d import UNet2D, get_model
 from dataset import ContourDataset, LatentDataset
 from discriminator import PatchGANDiscriminator
-from train_utils import train as ddpm_train, cosine_beta_schedule
+from train_utils import train as ddpm_train
 from torch.optim.lr_scheduler import CosineAnnealingLR
 import numpy as np
 import logging
@@ -202,6 +202,7 @@ def train_proc(args):
             train_loader=train_loader,
             val_loader=val_loader,
             optimizer=optimizer,
+            optim_d=optim_d,
             device=device,
             args=args,
             discriminator=discriminator,
@@ -241,7 +242,7 @@ def main():
     parser.add_argument('--dataset_type', type=str, default='latent', choices=['image', 'latent'], help='Type of dataset to use for training. Should be "latent".')
     
     # --- Training Hyperparameters ---
-    parser.add_argument("--epochs", dest="num_epochs", type=int, default=1000, help="Total number of training epochs.")
+    parser.add_argument("--num_epochs", type=int, default=1000, help="Total number of training epochs.")
     parser.add_argument("--batch_size",  type=int, default=64, help="Batch size for training.")
     parser.add_argument("--num_workers", type=int, default=8, help="Number of workers for DataLoader.")
     parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate for the U-Net optimizer.")

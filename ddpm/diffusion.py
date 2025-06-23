@@ -34,6 +34,11 @@ class Diffusion:
         noise = torch.randn_like(x)
         return sqrt_alpha_hat * x + sqrt_one_minus_alpha_hat * noise, noise
     
+    def predict_start_from_noise(self, x_t, t, noise):
+        sqrt_alpha_hat = torch.sqrt(self.alpha_hat[t])[:, None, None, None]
+        sqrt_one_minus_alpha_hat = torch.sqrt(1. - self.alpha_hat[t])[:, None, None, None]
+        return (x_t - sqrt_one_minus_alpha_hat * noise) / sqrt_alpha_hat
+
     def sample_timesteps(self, n): # sample n timesteps from the noise schedule
         return torch.randint(low=1, high = self.noise_step, size=(n,))
 

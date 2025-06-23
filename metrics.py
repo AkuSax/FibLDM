@@ -6,6 +6,7 @@ from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity
 from torchmetrics.image import StructuralSimilarityIndexMeasure
 from torchmetrics.utilities.data import dim_zero_cat
 import numpy as np
+import logging
 
 class RealismMetrics:
     def __init__(self, device='cuda', sync_on_compute=True):
@@ -63,7 +64,7 @@ class RealismMetrics:
             # Compute FID
             metrics['fid'] = self.fid.compute().item()
         except Exception as e:
-            print(f"[metrics.py] FID computation error: {str(e)}")
+            logging.warning(f"[metrics.py] FID computation error: {str(e)}")
             metrics['fid'] = float('inf')
             
         try:
@@ -80,7 +81,7 @@ class RealismMetrics:
             metrics['kid'] = kid_mean.item()  # Store mean KID value
             metrics['kid_std'] = kid_std.item()  # Store KID std if needed
         except Exception as e:
-            print(f"[metrics.py] KID computation error: {str(e)}")
+            logging.warning(f"[metrics.py] KID computation error: {str(e)}")
             metrics['kid'] = float('inf')
             metrics['kid_std'] = float('inf')
             
@@ -97,13 +98,13 @@ class RealismMetrics:
                 lpips_values.append(batch_lpips)
             metrics['lpips'] = np.mean(lpips_values)
         except Exception as e:
-            print(f"[metrics.py] LPIPS computation error: {str(e)}")
+            logging.warning(f"[metrics.py] LPIPS computation error: {str(e)}")
             metrics['lpips'] = float('inf')
             
         try:
             metrics['ssim'] = self.ssim(fake_images[:min_batch], real_images[:min_batch]).item()
         except Exception as e:
-            print(f"[metrics.py] SSIM computation error: {str(e)}")
+            logging.warning(f"[metrics.py] SSIM computation error: {str(e)}")
             metrics['ssim'] = float('inf')
             
         return metrics
@@ -135,7 +136,7 @@ class RealismMetrics:
             # Compute FID
             return self.fid.compute()
         except Exception as e:
-            print(f"[metrics.py] FID computation error: {str(e)}")
+            logging.warning(f"[metrics.py] FID computation error: {str(e)}")
             return torch.tensor(float('inf'), device=real_images.device)
 
     def kid(self, real_images, fake_images):
@@ -163,6 +164,6 @@ class RealismMetrics:
             # Compute KID
             return kid_metric.compute()
         except Exception as e:
-            print(f"[metrics.py] KID computation error: {str(e)}")
+            logging.warning(f"[metrics.py] KID computation error: {str(e)}")
             return (torch.tensor(float('inf'), device=real_images.device), 
                    torch.tensor(float('inf'), device=real_images.device)) 
