@@ -159,12 +159,12 @@ def train_proc(args):
             time_dim=args.time_dim,
             pretrained_ckpt=args.encoder_ckpt
         ).to(device)
-        model = DDP(model, device_ids=[local_rank], output_device=local_rank)
+        model = DDP(model, device_ids=[local_rank], output_device=local_rank, find_unused_parameters=True)
 
         discriminator = None
         if "adv" in args.losses:
             discriminator = PatchGANDiscriminator(device=device).to(device)
-            discriminator = DDP(discriminator, device_ids=[local_rank], output_device=local_rank)
+            discriminator = DDP(discriminator, device_ids=[local_rank], output_device=local_rank, find_unused_parameters=True)
 
         # Optimizers
         optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=0.05)
@@ -235,9 +235,9 @@ def main():
     parser = argparse.ArgumentParser(description="Latent Diffusion Model Training")
     
     # --- Paths and Data ---
-    parser.add_argument("--data_path", type=str, default="/hot/Yi-Kuan/Fibrosis", help="Path to the original image dataset directory.")
-    parser.add_argument("--csv_path", type=str, default="small_label.csv", help="Path to the dataset CSV file, relative to data_path.")
-    parser.add_argument("--latent_datapath", type=str, default="./data/latents_dataset", help="Path to the directory containing pre-computed latents.")
+    parser.add_argument("--data_path", type=str, default="./data", help="Path to the image dataset directory.")
+    parser.add_argument("--csv_path", type=str, default="/hot/Yi-Kuan/Fibrosis/label.csv", help="Path to the dataset CSV file, relative to data_path.")
+    parser.add_argument("--latent_datapath", type=str, default="./data", help="Path to the directory containing pre-computed latents, contours, and manifest.")
     parser.add_argument("--save_dir", type=str, default="model_runs/ldm_run_1", help="Path to save the model, logs, and samples.")
     parser.add_argument('--dataset_type', type=str, default='latent', choices=['image', 'latent'], help='Type of dataset to use for training. Should be "latent".')
     
@@ -253,7 +253,7 @@ def main():
     
     # --- Model Hyperparameters ---
     parser.add_argument("--img_size", type=int, default=256, help="Size of the original, full-resolution image (for reference).")
-    parser.add_argument("--vae_checkpoint", type=str, default="vae_checkpoint/vae_best.pth", help="Path to the trained VAE model checkpoint.")
+    parser.add_argument("--vae_checkpoint", type=str, default="../model_runs/vae_run_1/vae_best.pth", help="Path to the trained VAE model checkpoint.")
     parser.add_argument("--latent_size", type=int, default=16, help="Spatial size of the latent space (e.g., 16x16).")
     parser.add_argument("--latent_dim", type=int, default=8, help="Number of channels in the latent space (from VAE).")
     parser.add_argument("--contour_channels", type=int, default=1, help="Number of channels for the contour condition.")
@@ -274,8 +274,9 @@ def main():
     parser.add_argument("--device", type=str, default="cuda", help="Device to use for training.")
     parser.add_argument("--load_model", type=str, default=None, help="Path to a full checkpoint to resume training.")
     parser.add_argument("--sample_batch_size",  type=int, default=16, help="Number of samples to generate for visualization.")
-    parser.add_argument("--ema_decay", float, default=0.9999, help="Decay rate for the Exponential Moving Average of model weights.")
+    parser.add_argument("--ema_decay", type=float, default=0.9999, help="Decay rate for the Exponential Moving Average of model weights.")
     parser.add_argument("--use_amp", action="store_true", help="Enable Automatic Mixed Precision (AMP) for training.")
+    parser.add_argument("--use_compile", action="store_true", help="Enable torch.compile() optimization.")
     parser.add_argument("--no_sync_on_compute", action="store_true", help="Disable torchmetrics synchronization on each computation step.")
 
     # Filter out empty or whitespace-only arguments that can occur with multi-line shell commands.

@@ -12,6 +12,7 @@ import logging
 
 import lpips
 import torchvision.utils as vutils
+import pandas as pd
 
 from metrics import RealismMetrics
 from utils import EarlyStopper, EMA
@@ -67,14 +68,13 @@ def train(
         # This loader is for generating full-resolution images for visual metrics (FID, KID, etc.)
         # It's only needed on the main process.
         from dataset import ContourDataset # Re-import for validation
-        # Create a subset of the val_ds for faster metric calculation
-        val_img_dataset = ContourDataset(label_file=os.path.join(args.data_path, args.csv_path), img_dir=args.data_path, istransform=False)
-        
-        # We need a way to select the same subset of images for validation metrics consistently
-        # Here we'll just use the first N samples for simplicity
-        val_indices = list(range(len(val_loader.dataset))) # WARNING: This gets indices from the LATENT val set
-        val_img_subset = torch.utils.data.Subset(val_img_dataset, val_indices[:args.sample_batch_size * 4]) # Limit to a few batches
-        
+        # Load manifest to get available indices
+        manifest_path = os.path.join('../data', "manifest.csv")
+        manifest = pd.read_csv(manifest_path)
+        available_indices = manifest['original_file'].index.tolist()
+        val_img_dataset = ContourDataset(label_file=os.path.join('./data', args.csv_path), img_dir='./data', istransform=False)
+        # Only use indices that exist in the manifest
+        val_img_subset = torch.utils.data.Subset(val_img_dataset, available_indices[:args.sample_batch_size * 4])
         val_img_loader = torch.utils.data.DataLoader(val_img_subset, batch_size=args.sample_batch_size, shuffle=False)
 
 
@@ -115,7 +115,6 @@ def train(
 
             with autocast(device_type='cuda', dtype=torch.float16, enabled=args.use_amp):
                 pred_noise = model(x_in, t)
-                
                 total_loss = 0
                 loss_dict = {}
 
@@ -125,20 +124,10 @@ def train(
                     total_loss += args.lambda_mse * loss_mse
                     loss_dict['mse'] = loss_mse.item()
 
-                # --- LPIPS and Adversarial Losses (require predicting x0) ---
-                if 'lpips' in args.losses or 'adv' in args.losses:
+                # --- Adversarial Loss (require predicting x0) ---
+                if 'adv' in args.losses:
                     pred_x0 = diffusion.predict_start_from_noise(x_t, t, pred_noise)
-
-                    # --- LPIPS Loss ---
-                    if 'lpips' in args.losses and lpips_loss is not None:
-                        # LPIPS expects images in [-1, 1] range, which latents are.
-                        loss_lpips = lpips_loss(pred_x0, latents).mean()
-                        total_loss += args.lambda_lpips * loss_lpips
-                        loss_dict['lpips'] = loss_lpips.item()
-                    
-                    # --- Adversarial Loss (Generator part) ---
-                    if 'adv' in args.losses and discriminator is not None:
-                        # We want the discriminator to think the generated images are real
+                    if discriminator is not None:
                         d_fake_pred = discriminator(pred_x0)
                         loss_adv = -torch.mean(d_fake_pred)
                         total_loss += args.lambda_adv * loss_adv
@@ -220,13 +209,15 @@ def train(
 
                     logging.info("Generating debug samples...")
                     # 1. Generate new clean latents with the LDM
-                    ema.ema_model.eval()
+                    ema.apply_shadow(model)
+                    model.eval()
                     generated_latents = diffusion.sample(
-                        ema.ema_model, 
+                        model, 
                         n=val_latents.size(0), 
                         condition=val_contours_downsampled,
                         latent_dim=args.latent_dim
                     )
+                    ema.restore(model)
                     
                     # 2. Decode both original and generated latents into images
                     # This shows a side-by-side of VAE reconstruction vs. LDM's output
@@ -250,44 +241,53 @@ def train(
                 logging.warning("VAE or validation image loader not available, skipping metrics calculation.")
             else:
                 model.eval()
-                
                 local_real_images = []
                 local_fake_samples_decoded = []
-
+                manifest_path = os.path.join('../data', "manifest.csv")
+                manifest = pd.read_csv(manifest_path)
+                latent_dir = os.path.join('../data', "latents")
+                contour_dir = os.path.join('../data', "contours")
+                n_samples = min(args.sample_batch_size * 4, len(manifest))
                 with torch.no_grad():
-                    # Use a simple progress indicator instead of verbose tqdm
-                    if is_main:
-                        logging.info(f"Epoch {epoch}: Calculating metrics...")
-                    
-                    for images, contours in val_img_loader:
-                        images = images.to(device)
-                        contours = contours.to(device)
-                        
-                        contours_downsampled = F.interpolate(contours, size=(args.latent_size, args.latent_size), mode='nearest')
-
-                        # Generate latents from contour condition and decode them to images
-                        samples_latent = diffusion.sample(model, images.size(0), contours_downsampled, fast_sampling=True, latent_dim=args.latent_dim)
-                        samples_decoded = vae.decode(samples_latent)
-
-                        local_real_images.append(images.cpu())
-                        local_fake_samples_decoded.append(samples_decoded.cpu())
-                
-                # This part doesn't need DDP gathering since it only runs on main process
+                    for i in range(n_samples):
+                        latent = torch.load(os.path.join(latent_dir, f"{i}.pt")).to(device)
+                        # Ensure latent is [1, C, H, W] before decoding
+                        if latent.dim() == 3:
+                            latent = latent.unsqueeze(0)
+                        elif latent.dim() == 4 and latent.shape[0] == 1:
+                            pass
+                        else:
+                            raise ValueError(f"Unexpected latent shape: {latent.shape}")
+                        contour = torch.load(os.path.join(contour_dir, f"{i}.pt")).to(device)
+                        # Decode the latent to get the real image
+                        real_image = vae.decode(latent).squeeze(0)
+                        # Generate a fake sample from the model
+                        contour_downsampled = F.interpolate(contour.unsqueeze(0), size=(args.latent_size, args.latent_size), mode='nearest').squeeze(0)
+                        fake_latent = diffusion.sample(model, 1, contour_downsampled.unsqueeze(0), fast_sampling=True, latent_dim=args.latent_dim).squeeze(0)
+                        fake_image = vae.decode(fake_latent.unsqueeze(0)).squeeze(0)
+                        local_real_images.append(real_image.cpu())
+                        local_fake_samples_decoded.append(fake_image.cpu())
                 if is_main:
-                    all_real_images = torch.cat(local_real_images, dim=0)
-                    all_fake_samples = torch.cat(local_fake_samples_decoded, dim=0)
-                    
+                    all_real_images = torch.stack(local_real_images, dim=0)
+                    all_fake_samples = torch.stack(local_fake_samples_decoded, dim=0)
                     if all_real_images.numel() > 0:
                         logging.info("Computing FID, KID, LPIPS, SSIM...")
-                        metric_results = metrics.compute(all_fake_samples, all_real_images)
-                        
-                        # Log metrics to console and CSV
+                        # Ensure images are on the same device as metrics
+                        all_real_images = all_real_images.to(device)
+                        all_fake_samples = all_fake_samples.to(device)
+                        metric_results = metrics.compute_metrics(all_real_images, all_fake_samples)
                         log_line = f"Epoch {epoch} Metrics | " + " | ".join([f"{k}: {v:.4f}" for k, v in metric_results.items()])
                         logging.info(log_line)
-                        
                         with open(metrics_csv, 'a', newline='') as f:
                             writer = csv.writer(f)
                             writer.writerow([epoch, metric_results.get('fid', -1), metric_results.get('kid', -1), metric_results.get('lpips', -1), metric_results.get('ssim', -1), avg_loss])
+                        # --- Model Checkpoint Saving ---
+                        if epoch % args.save_interval == 0:
+                            trained_models_dir = os.path.join(args.save_dir, 'trained_models')
+                            os.makedirs(trained_models_dir, exist_ok=True)
+                            checkpoint_path = os.path.join(trained_models_dir, f"model_epoch_{epoch:04d}.pth")
+                            torch.save(model.state_dict(), checkpoint_path)
+                            logging.info(f"Saved model checkpoint at {checkpoint_path}")
                     else:
                         logging.warning("No images were gathered for metric computation.")
 

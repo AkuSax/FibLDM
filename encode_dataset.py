@@ -19,7 +19,7 @@ def main(args):
     # --- Load Original Dataset ---
     # We set istransform=False to get the raw, un-augmented images
     print("Loading original dataset...")
-    dataset = ContourDataset(csv_file=args.csv_file, img_dir=args.img_dir, istransform=False)
+    dataset = ContourDataset(label_file=args.csv_file, img_dir=args.img_dir, istransform=False)
     
     # --- Create Directories for Latent Data ---
     latent_dir = os.path.join(args.output_dir, "latents")
@@ -59,8 +59,8 @@ def main(args):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Dataset Encoding Script")
     # Paths
-    parser.add_argument("--csv_file", type=str, required=True, help="Path to the training data CSV file.")
-    parser.add_argument("--img_dir", type=str, required=True, help="Path to the image directory.")
+    parser.add_argument("--csv_file", type=str, required=True, help="Path to the training data CSV file (e.g., ./data/small_label.csv).")
+    parser.add_argument("--img_dir", type=str, required=True, help="Path to the image directory (e.g., ./data/).")
     parser.add_argument("--vae_checkpoint", type=str, required=True, help="Path to the trained VAE model checkpoint (e.g., vae_run_1/vae_best.pth).")
     parser.add_argument("--output_dir", type=str, default="./data/latents_dataset", help="Directory to save the encoded latents and contours.")
     

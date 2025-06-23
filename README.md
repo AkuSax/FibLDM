@@ -46,53 +46,8 @@ Once the VAE is trained, use it to encode the entire image dataset into latent v
 ```bash
 # Run the encoding script, pointing it to your trained VAE.
 python encode_dataset.py \
-    --csv_file ./small_label.csv \
-    --img_dir /hot/Yi-Kuan/Fibrosis/ \
+    --csv_file ./data/small_label.csv \
+    --img_dir ./data/ \
     --vae_checkpoint ./vae_run_1/vae_best.pth \
     --output_dir ./data/latents_dataset
 ```
-*This will create a `./data/latents_dataset/` directory containing the latents, contours, and a manifest file.*
-
-### Step 3: Train the Latent Diffusion Model
-
-Finally, train the U-Net in the latent space. This script uses DDP for multi-GPU training and points to the latent dataset you just created.
-
-```bash
-# Use your existing training script, now configured for LDM.
-# Ensure arguments in train_stable.sh point to the latent data.
-./scripts/train_stable.sh
-```
-*This script launches a background training process and saves the PID. Logs are saved to the `logs/` directory.*
-
-### Monitoring Training
-You can monitor the training progress in real-time using the provided monitoring script.
-
-```bash
-# View the latest training status, logs, and GPU usage.
-./scripts/monitor_training.sh
-```
-
----
-
-## Directory Structure
-```
-FibLDM/
-├── scripts/
-│   ├── train_vae.sh
-│   ├── train_stable.sh
-│   └── monitor_training.sh
-├── ddpm/
-│   ├── diffusion.py        # Core DDPM forward/reverse process logic
-│   └── losses.py           # Loss function registry
-├── autoencoder.py          # The VAE model for the first stage
-├── train_autoencoder.py    # Training script for the VAE
-├── encode_dataset.py       # Script to pre-compute latents
-├── unet2d.py               # U-Net architecture (operates on latents)
-├── main.py                 # DDP entry point for LDM training
-├── train_utils.py          # Core LDM training, validation, and sampling logic
-├── dataset.py              # Contains both ContourDataset and LatentDataset
-├── metrics.py              # Realism metrics (FID, KID, LPIPS, SSIM)
-├── utils.py                # Helper classes (EarlyStopper, EMA)
-└── requirements.txt        # Dependencies
-```
-

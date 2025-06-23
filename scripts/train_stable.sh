@@ -9,13 +9,6 @@ export NCCL_IB_TC=41
 export CUDA_VISIBLE_DEVICES=0,1
 export OMP_NUM_THREADS=1
 
-# Set a default data directory
-DEFAULT_DATA_DIR="/hot/Yi-Kuan/Fibrosis/"
-# Use the first argument as the data directory, or the default if not provided
-DATA_DIR="${1:-$DEFAULT_DATA_DIR}"
-
-echo "Using data directory: $DATA_DIR"
-
 # Generate timestamp for unique log file
 TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
 LOG_FILE="../logs/training_${TIMESTAMP}.log"
@@ -34,20 +27,22 @@ echo "To monitor progress: tail -f $LOG_FILE"
 
 # Run with nohup for background execution
 nohup torchrun --nproc_per_node=2 ../main.py \
-    --data_dir "$DATA_DIR" \
-    --csv_file "${DATA_DIR}/label.csv" \
+    --latent_datapath ../data \
+    --dataset_type latent \
+    --latent_dim 8 \
+    --latent_size 16 \
     --batch_size 24 \
     --num_workers 4 \
-    --epochs 500 \
+    --num_epochs 500 \
     --use_amp \
     --use_compile \
     --metrics_interval 25 \
     --save_interval 25 \
-    --losses mse,lpips \
+    --losses mse \
     --lambda_mse 1.0 \
-    --lambda_lpips 50.0 \
+    --early_stop_patience 20 \
     --no_sync_on_compute \
-    --save_dir ../model_runs/full_run > "$LOG_FILE" 2>&1 &
+    --save_dir ../model_runs/full_run_3 > "$LOG_FILE" 2>&1 &
 
 # Get the process ID
 TRAINING_PID=$!

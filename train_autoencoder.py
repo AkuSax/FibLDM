@@ -23,7 +23,7 @@ def main(args):
     os.makedirs(args.save_dir, exist_ok=True)
     
     # --- Data ---
-    full_dataset = ContourDataset(csv_file=args.csv_file, img_dir=args.data_dir)
+    full_dataset = ContourDataset(label_file=args.label_file, img_dir=args.data_dir)
     train_size = int(0.9 * len(full_dataset))
     val_size = len(full_dataset) - train_size
     train_ds, val_ds = random_split(full_dataset, [train_size, val_size])
@@ -98,8 +98,8 @@ def main(args):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="VAE Training Script")
     # Paths
-    parser.add_argument("--csv_file", type=str, required=True, help="Path to the training data CSV file.")
-    parser.add_argument("--data_dir", type=str, required=True, help="Path to the image directory.")
+    parser.add_argument("--label_file", type=str, required=True, help="Path to the training data CSV file (e.g., ./data/small_label.csv).")
+    parser.add_argument("--data_dir", type=str, required=True, help="Path to the image directory (e.g., ./data/).")
     parser.add_argument("--save_dir", type=str, default="vae_checkpoint", help="Directory to save model and samples.")
     
     # Hyperparameters

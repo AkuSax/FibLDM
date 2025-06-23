@@ -254,13 +254,13 @@ class UNet2DLatent(nn.Module):
         self.bot1 = DoubleConv(512, 1024)
         
         self.up1 = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True)
-        self.upconv1 = DoubleConv(1024 + 512, 512)
+        self.upconv1 = DoubleConv(1024 + 256, 512)
         
         self.up2 = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True)
-        self.upconv2 = DoubleConv(512 + 256, 256)
+        self.upconv2 = DoubleConv(512 + 128, 256)
         
         self.up3 = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True)
-        self.upconv3 = DoubleConv(256 + 128, 128)
+        self.upconv3 = DoubleConv(256 + 64, 128)
         
         self.outc = nn.Conv2d(128, out_channels, kernel_size=1)
 
