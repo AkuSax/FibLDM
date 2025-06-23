@@ -16,6 +16,7 @@ import csv
 from utils import EarlyStopper, EMA, save_debug_samples
 from metrics import KernelInceptionDistance
 import lpips
+import torchvision.utils as vutils
 
 
 def cosine_beta_schedule(timesteps: int, s: float = 0.008) -> torch.FloatTensor:
@@ -81,349 +82,193 @@ def train(
     metrics_callback=None,
     discriminator=None,
 ):
-    """Train the model."""
-    # Check if this is the main process
+    """Train the Latent Diffusion Model."""
     is_main = not dist.is_initialized() or dist.get_rank() == 0
     
-    # Enable cuDNN benchmarking for better performance
     torch.backends.cudnn.benchmark = True
-    
-    # Disable DDP optimizer to avoid compatibility issues with torch.compile
-    torch._dynamo.config.optimize_ddp = False
-    
-    # Use aot_eager backend which is more stable
     if args.use_compile:
-        model = torch.compile(model, backend="aot_eager")
+        model = torch.compile(model)
+
+    # --- VAE and EMA setup ---
+    vae = None
+    if is_main:
+        # VAE is only needed on the main process for decoding samples for visualization
+        print("Loading VAE for decoding...")
+        from autoencoder import VAE # Local import
+        vae = VAE(in_channels=1, latent_dim=args.latent_dim).to(device)
+        # You must provide the path to your trained VAE checkpoint
+        vae.load_state_dict(torch.load(args.vae_checkpoint, map_location=device))
+        vae.eval()
+        print("VAE loaded.")
 
     ema = EMA(model, decay=args.ema_decay)
     stopper = EarlyStopper(patience=args.early_stop_patience, mode='min')
     if scaler is None:
-        scaler = GradScaler()
+        scaler = GradScaler(enabled=args.use_amp)
     metrics = RealismMetrics(device=device, sync_on_compute=not args.no_sync_on_compute)
-    # Instantiate LPIPS model for loss calculation
-    if 'lpips' in args.losses:
-        lpips_loss_fn = lpips.LPIPS(net='vgg').to(device)
-
-    model.to(device)
 
     # Setup CSV logging
     metrics_csv = os.path.join(args.save_dir, 'metrics_log.csv')
     if is_main and not os.path.exists(metrics_csv):
         with open(metrics_csv, 'w', newline='') as f:
             writer = csv.writer(f)
+            # LPIPS is now a validation metric, not a loss term during latent training
             writer.writerow(['epoch', 'fid', 'kid', 'lpips', 'ssim', 'train_loss'])
 
     for epoch in range(args.num_epochs):
         model.train()
-        # Set epoch for distributed sampler
         if hasattr(train_loader.sampler, 'set_epoch'):
             train_loader.sampler.set_epoch(epoch)
             
         running_loss = 0.0
-
         pbar = tqdm(train_loader, desc=f"Epoch {epoch}", disable=not is_main)
-        for images, contour in pbar:
-            # Ensure we have a reasonable batch size for distributed training
-            if images.size(0) == 0:
-                if is_main:
-                    print(f"Warning: Empty batch encountered, skipping...")
-                continue
+        
+        # Note: The dataloader now yields (latents, contours)
+        for latents, contour in pbar:
+            if latents.size(0) == 0: continue
                 
-            images = images.to(device, non_blocking=True)
-            contour = contour.to(device, non_blocking=True)
+            latents = latents.to(device, non_blocking=True)
+            contour = contour.to(device, non_blocking=True) # Contour is already downsampled by LatentDataset
 
-            # Sample noise and prepare input
-            t = diffusion.sample_timesteps(images.size(0)).to(device)
-            x_t, noise = diffusion.noise_image(images, t)
+            # Sample noise and noise the latents
+            t = diffusion.sample_timesteps(latents.size(0)).to(device)
+            x_t, noise = diffusion.noise_image(latents, t) # `noise_image` works on any tensor
             x_in = torch.cat((x_t, contour), dim=1)
 
             optimizer.zero_grad()
 
-            # Forward (with optional AMP)
-            if args.use_amp:
-                with autocast(device_type='cuda', dtype=torch.float16):
-                    pred_noise = model(x_in, t)
-                    # Compute weighted sum of requested losses
-                    total_loss = torch.tensor(0.0, device=device, dtype=pred_noise.dtype)
-                    for name in args.losses:
-                        if name == "adv":
-                            if discriminator is None:
-                                raise RuntimeError("--losses adv requires a discriminator")
-                            disc_pred = discriminator(pred_noise)
-                            l = LOSS_REGISTRY[name](disc_pred)
-                        elif name == "lpips":
-                            # Reconstruct predicted x0
-                            sqrt_alpha_hat = torch.sqrt(diffusion.alpha_hat[t])[:, None, None, None]
-                            sqrt_one_minus_alpha_hat = torch.sqrt(1. - diffusion.alpha_hat[t])[:, None, None, None]
-                            pred_x0 = (x_t - sqrt_one_minus_alpha_hat * pred_noise) / sqrt_alpha_hat
-                            pred_x0 = torch.tanh(pred_x0)
-                            # LPIPS loss between predicted x0 and original image
-                            l = lpips_loss_fn(pred_x0, images).mean()
-                        else:
-                            l = LOSS_REGISTRY[name](pred_noise, noise)
-                        total_loss = total_loss + getattr(args, f"lambda_{name}") * l
-            else:
+            with autocast(device_type='cuda', dtype=torch.float16, enabled=args.use_amp):
                 pred_noise = model(x_in, t)
-                total_loss = torch.tensor(0.0, device=device)
-                for name in args.losses:
-                    if name == "adv":
-                        if discriminator is None:
-                            raise RuntimeError("--losses adv requires a discriminator")
-                        disc_pred = discriminator(pred_noise)
-                        l = LOSS_REGISTRY[name](disc_pred)
-                    elif name == "lpips":
-                        # Reconstruct predicted x0
-                        sqrt_alpha_hat = torch.sqrt(diffusion.alpha_hat[t])[:, None, None, None]
-                        sqrt_one_minus_alpha_hat = torch.sqrt(1. - diffusion.alpha_hat[t])[:, None, None, None]
-                        pred_x0 = (x_t - sqrt_one_minus_alpha_hat * pred_noise) / sqrt_alpha_hat
-                        pred_x0 = torch.tanh(pred_x0)
-                        # LPIPS loss between predicted x0 and original image
-                        l = lpips_loss_fn(pred_x0, images).mean()
-                    else:
-                        l = LOSS_REGISTRY[name](pred_noise, noise)
-                    total_loss = total_loss + getattr(args, f"lambda_{name}") * l
-
-            # Backward & optimizer step
-            if args.use_amp:
-                scaler.scale(total_loss).backward()
-                scaler.step(optimizer)
-                scaler.update()
-            else:
-                total_loss.backward()
-                optimizer.step()
+                # The primary loss is now MSE between the predicted and actual noise in the latent space
+                total_loss = F.mse_loss(pred_noise, noise)
+            
+            scaler.scale(total_loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
 
             running_loss += total_loss.item()
-
-            # EMA update
             ema.update(model)
 
         avg_loss = running_loss / len(train_loader)
         if is_main:
             print(f"Epoch {epoch} | Train loss: {avg_loss:.6f}")
 
-        # --- Visual Debugging: Save sample grid every save_interval epochs ---
+        # --- Visual Debugging: Sample, Decode, and Save ---
         if is_main and epoch % args.save_interval == 0:
-            with torch.no_grad():
-                val_images, val_contours = next(iter(val_loader))
-                val_images = val_images.to(device)
-                val_contours = val_contours.to(device)
-                debug_samples = diffusion.sample(model, val_images.size(0), val_contours)
-                save_debug_samples(epoch, val_images, val_contours, debug_samples)
-                print(f"Saved debug samples for epoch {epoch}.")
-
-        # --- Realism Metrics Calculation on Validation Set ---
-        metric_results = {}
-        if epoch % args.metrics_interval == 0:
-            model.eval()
-            local_real_images = []
-            local_fake_samples = []
-
-            # Part 1: All GPUs generate samples for their portion of the validation set
-            with torch.no_grad():
-                # Disable tqdm on non-main ranks
-                val_pbar = tqdm(val_loader, desc=f"Epoch {epoch} Validating", disable=not is_main)
-                for images, contours in val_pbar:
-                    images = images.to(device)
-                    contours = contours.to(device)
-                    # Use fast_sampling for efficiency during validation
-                    samples = diffusion.sample(model, images.size(0), contours, fast_sampling=True)
-                    # Move results to CPU to free up GPU memory before gathering
-                    local_real_images.append(images.cpu())
-                    local_fake_samples.append(samples.cpu())
-
-            # Part 2: Synchronize and gather all data to the main process
-            if dist.is_initialized():
-                try:
-                    # Use all_gather_object for lists of tensors. It's robust to varying tensor sizes within the list.
-                    gathered_real_obj = [None for _ in range(dist.get_world_size())]
-                    gathered_fake_obj = [None for _ in range(dist.get_world_size())]
-
-                    # These operations have an internal timeout
-                    dist.all_gather_object(gathered_real_obj, local_real_images)
-                    dist.all_gather_object(gathered_fake_obj, local_fake_samples)
-
-                    # Consolidate the gathered data on the main process
-                    if is_main:
-                        all_real_images = [tensor for sublist in gathered_real_obj for tensor in sublist]
-                        all_fake_samples = [tensor for sublist in gathered_fake_obj for tensor in sublist]
-
-                except RuntimeError as e:
-                    if "timeout" in str(e).lower():
-                        print(f"\nCaught a distributed timeout during validation gathering, skipping metrics for epoch {epoch}.")
-                        # Empty the lists to ensure metrics are skipped
-                        all_real_images = []
-                        all_fake_samples = []
-                    else:
-                        raise e # Re-raise other runtime errors
-            else: # Single-GPU case
-                 if is_main:
-                    all_real_images = local_real_images
-                    all_fake_samples = local_fake_samples
-
-            # Part 3: Main process computes the metrics
-            if is_main and all_real_images:
-                try:
-                    metrics.reset()
-                    all_real_images = torch.cat(all_real_images, dim=0)
-                    all_fake_samples = torch.cat(all_fake_samples, dim=0)
-
-                    # CORRECTED: Instantiate KID metric here to be updated in batches
-                    subset_size = min(50, all_real_images.size(0))
-                    kid_metric = KernelInceptionDistance(subset_size=subset_size, normalize=True, sync_on_compute=not args.no_sync_on_compute).to(device)
-
-                    pbar_metrics = tqdm(range(0, all_real_images.size(0), args.batch_size), desc="Calculating metrics", leave=False)
-                    for i in pbar_metrics:
-                        end_idx = min(i + args.batch_size, all_real_images.size(0))
-                        real_batch = all_real_images[i:end_idx].to(device)
-                        fake_batch = all_fake_samples[i:end_idx].to(device)
-                        
-                        # Normalize images to expected ranges
-                        real_norm_01 = (real_batch + 1) / 2
-                        fake_norm_01 = fake_batch
-                        real_norm_m11 = real_batch
-                        fake_norm_m11 = fake_batch * 2.0 - 1.0
-
-                        # Ensure 3 channels for metrics that require it
-                        real_3c_01 = real_norm_01.repeat(1, 3, 1, 1) if real_norm_01.shape[1] == 1 else real_norm_01
-                        fake_3c_01 = fake_norm_01.repeat(1, 3, 1, 1) if fake_norm_01.shape[1] == 1 else fake_norm_01
-                        real_3c_m11 = real_norm_m11.repeat(1, 3, 1, 1) if real_norm_m11.shape[1] == 1 else real_norm_m11
-                        fake_3c_m11 = fake_norm_m11.repeat(1, 3, 1, 1) if fake_norm_m11.shape[1] == 1 else fake_norm_m11
-
-                        # Update metrics in batches
-                        metrics.fid.update(real_3c_01, real=True)
-                        metrics.fid.update(fake_3c_01, real=False)
-                        metrics.lpips.update(fake_3c_m11, real_3c_m11)
-                        metrics.ssim.update(fake_norm_01, real_norm_01)
-                        # CORRECTED: Update KID in batches
-                        kid_metric.update(real_3c_01, real=True)
-                        kid_metric.update(fake_3c_01, real=False)
-
-                    # Compute final metric scores
-                    metric_results['fid'] = metrics.fid.compute().item()
-                    metric_results['lpips'] = metrics.lpips.compute().item()
-                    metric_results['ssim'] = metrics.ssim.compute().item()
-                    # CORRECTED: Compute KID after loop
-                    kid_mean, kid_std = kid_metric.compute()
-                    metric_results['kid'] = kid_mean.item()
-                    metric_results['kid_std'] = kid_std.item()
-                    
-                    print(f"Epoch {epoch} | Metrics:")
-                    for name, value in metric_results.items():
-                        if '_std' in name: continue
-                        std_name = f"{name}_std"
-                        if std_name in metric_results:
-                            print(f"  {name}: {value:.4f} (std: {metric_results[std_name]:.4f})")
-                        else:
-                            print(f"  {name}: {value:.4f}")
-                            
-                except Exception as e:
-                    print(f"Error during metrics computation: {e}")
-                    metric_results = {}
+            if vae is None:
+                print("Warning: VAE not available on main process, skipping debug sample generation.")
             else:
-                if is_main:
-                    print(f"Epoch {epoch} | Skipping metrics (no validation data or not main process)")
-                metric_results = {}
-            
-            model.train()
+                with torch.no_grad():
+                    # Get a batch of validation latents and (downsampled) contours
+                    val_latents, val_contours_downsampled = next(iter(val_loader))
+                    val_latents = val_latents.to(device)
+                    val_contours_downsampled = val_contours_downsampled.to(device)
 
-        # Live CSV logging
+                    print("Generating debug samples...")
+                    # 1. Generate new clean latents with the LDM
+                    ema.ema_model.eval()
+                    generated_latents = diffusion.sample(
+                        ema.ema_model, 
+                        n=val_latents.size(0), 
+                        condition=val_contours_downsampled
+                    )
+                    
+                    # 2. Decode both original and generated latents into images
+                    # This shows a side-by-side of VAE reconstruction vs. LDM's output
+                    original_recons = vae.decode(val_latents)
+                    generated_images = vae.decode(generated_latents)
+                    
+                    # 3. Save for comparison
+                    save_path = os.path.join(args.save_dir, 'epoch_samples')
+                    os.makedirs(save_path, exist_ok=True)
+                    
+                    # Save a grid comparing VAE reconstruction to LDM's output
+                    comparison_grid = torch.cat([original_recons, generated_images])
+                    vutils.save_image(comparison_grid, os.path.join(save_path, f"comparison_{epoch:04d}.png"), nrow=val_latents.size(0))
+                    
+                    print(f"Saved decoded debug samples for epoch {epoch}.")
+
+        # --- Metrics Calculation on Validation Set ---
+        metric_results = {}
         if is_main and epoch % args.metrics_interval == 0:
+            if vae is None:
+                print("Warning: VAE not available, skipping metrics calculation.")
+            else:
+                model.eval()
+                
+                # For metrics, we need to compare generated images to the *true* original images.
+                # We need a separate loader for the original, high-resolution image dataset.
+                from dataset import ContourDataset # Re-import for validation
+                val_img_dataset = ContourDataset(csv_file=os.path.join(args.data_path, args.csv_path), img_dir=args.data_path, istransform=False)
+                # Important: Use a DistributedSampler for the validation image loader as well
+                val_img_sampler = torch.utils.data.distributed.DistributedSampler(val_img_dataset, shuffle=False)
+                val_img_loader = torch.utils.data.DataLoader(val_img_dataset, batch_size=args.sample_batch_size, sampler=val_img_sampler)
+
+                local_real_images = []
+                local_fake_samples_decoded = []
+
+                with torch.no_grad():
+                    val_pbar = tqdm(val_img_loader, desc=f"Epoch {epoch} Calculating Metrics", disable=not is_main)
+                    for images, contours in val_pbar:
+                        images = images.to(device)
+                        contours = contours.to(device)
+                        
+                        contours_downsampled = F.interpolate(contours, size=(args.latent_size, args.latent_size), mode='nearest')
+
+                        # Generate latents from contour condition and decode them to images
+                        samples_latent = diffusion.sample(model, images.size(0), contours_downsampled, fast_sampling=True)
+                        samples_decoded = vae.decode(samples_latent)
+
+                        local_real_images.append(images.cpu())
+                        local_fake_samples_decoded.append(samples_decoded.cpu())
+                
+                # Gather results from all processes
+                gathered_real = [None for _ in range(dist.get_world_size())]
+                gathered_fake = [None for _ in range(dist.get_world_size())]
+                dist.all_gather_object(gathered_real, local_real_images)
+                dist.all_gather_object(gathered_fake, local_fake_samples)
+                
+                if is_main:
+                    all_real_images = [item for sublist in gathered_real for item in sublist]
+                    all_fake_samples = [item for sublist in gathered_fake for item in sublist]
+                    
+                    if all_real_images:
+                        all_real_images = torch.cat(all_real_images, dim=0)
+                        all_fake_samples = torch.cat(all_fake_samples, dim=0)
+
+                        print(f"Calculating realism metrics on {len(all_real_images)} images...")
+                        metric_results = metrics.compute(all_real_images, all_fake_samples)
+                        print(f"Epoch {epoch} Metrics: {metric_results}")
+                    else:
+                        print("No images processed for metrics, skipping.")
+
+
+        # --- Logging and Early Stopping (Main Process Only) ---
+        if is_main:
+            # Log metrics to CSV
             with open(metrics_csv, 'a', newline='') as f:
                 writer = csv.writer(f)
                 writer.writerow([
                     epoch,
-                    metric_results.get('fid', ''),
-                    metric_results.get('kid', ''),
-                    metric_results.get('lpips', ''),
-                    metric_results.get('ssim', ''),
+                    metric_results.get('fid', 'N/A'),
+                    metric_results.get('kid', 'N/A'),
+                    metric_results.get('lpips', 'N/A'),
+                    metric_results.get('ssim', 'N/A'),
                     avg_loss
                 ])
-
-        # Console logging of all statistics
-        if is_main and metric_results:
-            print(f"Epoch {epoch} | Statistics:")
-            print(f"  fid: {metric_results.get('fid', '')}")
-            print(f"  kid: {metric_results.get('kid', '')}")
-            print(f"  lpips: {metric_results.get('lpips', '')}")
-            print(f"  ssim: {metric_results.get('ssim', '')}")
-            print(f"  train_loss: {avg_loss}")
-
-        # Save best model based on LPIPS
-        if is_main and epoch % args.metrics_interval == 0 and 'lpips' in metric_results:
-            current_lpips = metric_results.get('lpips', float('inf'))
-            print(f"Epoch {epoch} | Val LPIPS: {current_lpips:.4f}  (best: {stopper.best_score:.4f})")
-
-            # Save best model if LPIPS has improved
-            if current_lpips < stopper.best_score:
-                print(f"New best LPIPS score. Saving model...")
-                torch.save({
-                    "model_state":     model.state_dict(),
-                    "ema_state":       ema.shadow,
-                    "optimizer_state": optimizer.state_dict(),
-                    "epoch":           epoch,
-                    "best_lpips":      current_lpips,
-                    "metrics":         metric_results
-                }, "best_ddpm_model.pth")
-                print("Saved new best model.")
-
-            # Early stopping check
-            if stopper.early_stop(current_lpips):
-                print(f"Early stopping triggered at epoch {epoch} due to no improvement in LPIPS.")
-                break
-
-        # Periodic checkpoint
-        if is_main and epoch % args.save_interval == 0:
-            save_dir = "trained_models"
-            os.makedirs(save_dir, exist_ok=True)
-            ckpt_path = os.path.join(
-                save_dir, f"ddpmv2_model_{epoch:03d}.pt"
-            )
-            torch.save({
-                "model_state":     model.state_dict(),
-                "optimizer_state": optimizer.state_dict(),
-                "epoch":           epoch,
-                "loss":            avg_loss,
-                "metrics":         metric_results if epoch % args.metrics_interval == 0 else None
-            }, ckpt_path)
-            print(f"Saved checkpoint to {ckpt_path}")
-
-        # Add a barrier here to ensure all processes are in sync before the next epoch
-        if dist.is_initialized():
-            dist.barrier()
-
-        if scheduler:
-            scheduler.step()
-
-    # Final sampling with EMA weights
-    if is_main:
-        print("Loading EMA weights for sampling…")
-        ema.apply_shadow(model)
-        model.eval()
-        
-        # Get a single batch from the validation loader
-        try:
-            final_val_images, final_val_contours = next(iter(val_loader))
-        except StopIteration:
-            print("Validation loader is empty, cannot generate final samples.")
-            return None
-
-        # Determine the sample batch size, ensuring it's not larger than the actual batch
-        sample_batch_size = min(args.sample_batch_size, final_val_contours.size(0))
-        
-        # Take the slice for sampling
-        sample_contour = final_val_contours[:sample_batch_size].to(device)
-        
-        # Generate the final samples
-        samples = diffusion.sample(model, sample_batch_size, sample_contour, fast_sampling=True)
-        ema.restore(model)
-    else:
-        samples = None
-
-    # Add a barrier here to ensure all processes wait for rank 0 to finish sampling
+            
+            # Check for early stopping
+            validation_metric = metric_results.get('lpips', float('inf')) # Using LPIPS as stopping criterion
+            if stopper.early_stop(validation_metric):
+                print(f"Early stopping triggered at epoch {epoch} based on validation LPIPS.")
+                break # Exit training loop
+    
+    # Final barrier to ensure all processes exit cleanly after training loop
     if dist.is_initialized():
         dist.barrier()
-
-    return samples
+        
+    print(f"Rank {dist.get_rank() if dist.is_initialized() else 0} finished training.")
+    return model
 
 
 def monitor_gpu_memory(device, stage=""):

@@ -132,11 +132,13 @@ class SinusoidalPositionEmbeddings(nn.Module):
         return embeddings
 
 class UNet2D(nn.Module):
-    def __init__(self, img_size=256, in_channels=1, out_channels=1, pretrained_ckpt=None):
+    def __init__(self, img_size=256, in_channels=1, out_channels=1, 
+                 channels=[64, 128, 256, 512, 1024], pretrained_ckpt=None):
         super().__init__()
         self.img_size = img_size
         self.in_channels = in_channels
         self.out_channels = out_channels
+        self.channels = channels
         
         # Time embedding
         self.time_mlp = nn.Sequential(
@@ -148,38 +150,38 @@ class UNet2D(nn.Module):
         
         # Time embedding projection layers for each stage
         time_dim = img_size
-        self.time_proj_down1 = nn.Linear(time_dim, 128 * 2)
-        self.time_proj_down2 = nn.Linear(time_dim, 256 * 2)
-        self.time_proj_down3 = nn.Linear(time_dim, 512 * 2)
-        self.time_proj_down4 = nn.Linear(time_dim, 1024 * 2)
+        self.time_proj_down1 = nn.Linear(time_dim, channels[1] * 2)
+        self.time_proj_down2 = nn.Linear(time_dim, channels[2] * 2)
+        self.time_proj_down3 = nn.Linear(time_dim, channels[3] * 2)
+        self.time_proj_down4 = nn.Linear(time_dim, channels[4] * 2)
         
-        self.time_proj_up1 = nn.Linear(time_dim, 512 * 2)
-        self.time_proj_up2 = nn.Linear(time_dim, 256 * 2)
-        self.time_proj_up3 = nn.Linear(time_dim, 128 * 2)
-        self.time_proj_up4 = nn.Linear(time_dim, 64 * 2)
+        self.time_proj_up1 = nn.Linear(time_dim, channels[3] * 2)
+        self.time_proj_up2 = nn.Linear(time_dim, channels[2] * 2)
+        self.time_proj_up3 = nn.Linear(time_dim, channels[1] * 2)
+        self.time_proj_up4 = nn.Linear(time_dim, channels[0] * 2)
         
         # Initial convolution
-        self.inc = DoubleConv(in_channels, 64)
+        self.inc = DoubleConv(in_channels, channels[0])
         
         # Downsampling
-        self.down1 = Down(64, 128)
-        self.down2 = Down(128, 256)
-        self.down3 = Down(256, 512)
-        self.down4 = Down(512, 1024)
+        self.down1 = Down(channels[0], channels[1])
+        self.down2 = Down(channels[1], channels[2])
+        self.down3 = Down(channels[2], channels[3])
+        self.down4 = Down(channels[3], channels[4])
         
         # Attention layers
-        self.attn1 = SelfAttention(256, size=img_size//4)
-        self.attn2 = SelfAttention(512, size=img_size//8)
-        self.attn3 = SelfAttention(1024, size=img_size//16)
+        self.attn1 = SelfAttention(channels[2], size=img_size//4)
+        self.attn2 = SelfAttention(channels[3], size=img_size//8)
+        self.attn3 = SelfAttention(channels[4], size=img_size//16)
         
         # Upsampling
-        self.up1 = Up(1024, 512)
-        self.up2 = Up(512, 256)
-        self.up3 = Up(256, 128)
-        self.up4 = Up(128, 64)
+        self.up1 = Up(channels[4], channels[3])
+        self.up2 = Up(channels[3], channels[2])
+        self.up3 = Up(channels[2], channels[1])
+        self.up4 = Up(channels[1], channels[0])
         
         # Output convolution
-        self.outc = OutConv(64, out_channels)
+        self.outc = OutConv(channels[0], out_channels)
         
         # Load pretrained weights if provided
         if pretrained_ckpt:

@@ -8,11 +8,13 @@ from torch.utils.data import DataLoader, distributed
 import torchvision.utils as vutils
 import matplotlib.pyplot as plt
 from ddpm.diffusion import Diffusion
-from unet2d import UNet2D
-from dataset import ContourDataset
+from unet2d import UNet2D, get_model
+from dataset import ContourDataset, LatentDataset
 from discriminator import PatchGANDiscriminator
 from train_utils import train as ddpm_train, cosine_beta_schedule
 from torch.optim.lr_scheduler import CosineAnnealingLR
+import numpy as np
+import logging
 
 torch.backends.cudnn.benchmark = True
 torch.set_float32_matmul_precision('high')
@@ -51,7 +53,19 @@ def train_proc(args):
             print(f"[Rank {local_rank}] Loading dataset...")
         
         # Data
-        dataset = ContourDataset(args.csv_file, args.data_dir)
+        if args.dataset_type == 'image':
+            dataset = ContourDataset(
+                label_file=os.path.join(args.data_path, args.csv_path),
+                img_dir=args.data_path,
+            )
+        elif args.dataset_type == 'latent':
+            dataset = LatentDataset(
+                data_dir=args.latent_datapath,
+                latent_size=args.latent_size
+            )
+        else:
+            raise ValueError(f"Unknown dataset type: {args.dataset_type}")
+        
         train_size = int(0.9 * len(dataset))
         val_size = len(dataset) - train_size
         
@@ -61,7 +75,7 @@ def train_proc(args):
             dataset, [train_size, val_size], generator=generator
         )
 
-        train_sampler = distributed.DistributedSampler(train_ds, seed=42)
+        sampler = distributed.DistributedSampler(train_ds, seed=42)
         val_sampler   = distributed.DistributedSampler(val_ds, shuffle=False, seed=42)
 
         # Reduce num_workers to prevent memory issues
@@ -70,7 +84,7 @@ def train_proc(args):
         train_loader = DataLoader(
             train_ds,
             batch_size=args.batch_size,
-            sampler=train_sampler,
+            sampler=sampler,
             num_workers=num_workers,
             pin_memory=True,
             prefetch_factor=2,  # Reduced from 16
@@ -92,18 +106,22 @@ def train_proc(args):
             print(f"[Rank {local_rank}] Creating model...")
         
         # Model + (optional) Discriminator
-        model = UNet2D(
-            img_size=args.image_size,
-            in_channels=args.in_channels,
-            out_channels=args.out_channels,
-            pretrained_ckpt = args.encoder_ckpt
-        )
-        if args.encoder_ckpt:
-            state = torch.hub.load_state_dict_from_url(args.encoder_ckpt, map_location="cpu", check_hash=True)
-            missing, _ = model.load_state_dict(state, strict=False)
-            if local_rank == 0:
-                print(f"[Info] Loaded encoder weights; missing keys: {missing}")
-        model = model.to(device)
+        if args.dataset_type == 'latent':
+            in_channels = args.latent_dim + args.contour_channels
+            out_channels = args.latent_dim
+            current_img_size = args.latent_size
+        else: # image
+            in_channels = 1 + args.contour_channels # image + contour
+            out_channels = 1 # image
+            current_img_size = args.img_size
+
+        model = get_model(
+            img_size=current_img_size,
+            in_channels=in_channels,
+            out_channels=out_channels,
+            time_dim=args.time_dim,
+            pretrained_ckpt=args.encoder_ckpt
+        ).to(device)
         model = DDP(model, device_ids=[local_rank], output_device=local_rank)
 
         discriminator = None
@@ -131,11 +149,9 @@ def train_proc(args):
         
         # Diffusion setup
         diffusion = Diffusion(
-            noise_step=args.noise_steps,
-            beta_start=args.beta_start,
-            beta_end=args.beta_end,
-            img_size=args.image_size,
-            device=device
+            img_size=current_img_size,
+            device=device,
+            schedule_name=args.noise_schedule
         )
         diffusion.betas = cosine_beta_schedule(
             diffusion.noise_step
@@ -182,61 +198,62 @@ def train_proc(args):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="DDPM training")
-    # Data & training hyperparameters
-    parser.add_argument("--data_dir",    type=str, default="/hot/Yi-Kuan/Fibrosis")
-    parser.add_argument("--csv_file",    type=str, default="/hot/Yi-Kuan/Fibrosis/label.csv")
-    parser.add_argument("--save_dir",    type=str, default=".")
-    parser.add_argument("--batch_size",  type=int, default=80)
-    parser.add_argument("--num_workers", type=int, default=8)
-    parser.add_argument("--image_size",  type=int, default=256)
-    parser.add_argument("--noise_steps", type=int, default=1000)
-    parser.add_argument("--beta_start",  type=float, default=1e-4)
-    parser.add_argument("--beta_end",    type=float, default=0.02)
-
-    parser.add_argument("--lr",          type=float, default=3e-4)
-    parser.add_argument("--lr_d",        type=float, default=1e-4)
-    parser.add_argument("--epochs",      dest="num_epochs", type=int, default=1000)
-    parser.add_argument("--encoder_ckpt",type=str, default=None)
-    parser.add_argument("--save_interval",      type=int, default=30)
-    parser.add_argument("--metrics_interval",   type=int, default=5,
-                        help="Interval in epochs to compute realism metrics")
-    parser.add_argument("--sample_batch_size",  type=int, default=16)
-    parser.add_argument("--ema_decay",          type=float, default=0.9999)
-    parser.add_argument("--early_stop_patience",type=int,   default=5)
-    parser.add_argument("--use_amp",            action="store_true",
-                        help="Enable mixed-precision training")
-    parser.add_argument("--use_compile",        action="store_true",
-                        help="Enable torch.compile() optimization")
-    parser.add_argument("--in_channels", type=int, default=2)
-    parser.add_argument("--out_channels",type=int, default=1)
-    parser.add_argument("--no_sync_on_compute", action="store_true",
-                        help="Disable torchmetrics sync on compute")
+    parser = argparse.ArgumentParser(description="Latent Diffusion Model Training")
     
-    # Loss configuration
-    parser.add_argument(
-        "--losses",
-        type=lambda s: s.split(","),
-        default=["mse"],
-        help="comma-separated list: mse,dice,boundary,focal,adv"
-    )
-    parser.add_argument("--lambda_mse",      type=float, default=1.0)
-    parser.add_argument("--lambda_dice",     type=float, default=0.0)
-    parser.add_argument("--lambda_boundary", type=float, default=0.0)
-    parser.add_argument("--lambda_focal",    type=float, default=0.0)
-    parser.add_argument("--lambda_adv",      type=float, default=0.0)
-    parser.add_argument("--lambda_lpips",    type=float, default=0.0,
-                        help="Weight for LPIPS perceptual loss")
+    # --- Paths and Data ---
+    parser.add_argument("--data_path", type=str, default="/hot/Yi-Kuan/Fibrosis", help="Path to the original image dataset directory.")
+    parser.add_argument("--csv_path", type=str, default="small_label.csv", help="Path to the dataset CSV file, relative to data_path.")
+    parser.add_argument("--latent_datapath", type=str, default="./data/latents_dataset", help="Path to the directory containing pre-computed latents.")
+    parser.add_argument("--save_dir", type=str, default="model_runs/ldm_run_1", help="Path to save the model, logs, and samples.")
+    parser.add_argument('--dataset_type', type=str, default='latent', choices=['image', 'latent'], help='Type of dataset to use for training. Should be "latent".')
+    
+    # --- Training Hyperparameters ---
+    parser.add_argument("--epochs", dest="num_epochs", type=int, default=1000, help="Total number of training epochs.")
+    parser.add_argument("--batch_size",  type=int, default=64, help="Batch size for training.")
+    parser.add_argument("--num_workers", type=int, default=8, help="Number of workers for DataLoader.")
+    parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate for the U-Net optimizer.")
+    parser.add_argument("--lr_d", type=float, default=1e-4, help="Learning rate for the discriminator optimizer.")
+    parser.add_argument("--save_interval", type=int, default=25, help="Epoch interval to save model checkpoints.")
+    parser.add_argument("--metrics_interval", type=int, default=10, help="Epoch interval to compute validation metrics.")
+    parser.add_argument("--early_stop_patience",type=int, default=10, help="Patience for early stopping based on validation loss.")
+    
+    # --- Model Hyperparameters ---
+    parser.add_argument("--img_size", type=int, default=256, help="Size of the original, full-resolution image (for reference).")
+    parser.add_argument("--vae_checkpoint", type=str, default="vae_checkpoint/vae_best.pth", help="Path to the trained VAE model checkpoint.")
+    parser.add_argument("--latent_size", type=int, default=16, help="Spatial size of the latent space (e.g., 16x16).")
+    parser.add_argument("--latent_dim", type=int, default=8, help="Number of channels in the latent space (from VAE).")
+    parser.add_argument("--contour_channels", type=int, default=1, help="Number of channels for the contour condition.")
+    parser.add_argument("--time_dim", type=int, default=256, help="Dimension of the time embedding in the U-Net.")
+    parser.add_argument("--encoder_ckpt", type=str, default=None, help="Path to a pretrained encoder checkpoint (optional).")
+    
+    # --- Diffusion Hyperparameters ---
+    parser.add_argument("--noise_steps", type=int, default=1000, help="Total number of steps in the diffusion process.")
+    parser.add_argument("--noise_schedule", type=str, default='cosine', choices=['cosine', 'linear'], help="Noise schedule for the diffusion process.")
 
-    parser.add_argument("--load_model", type=str, default=None,
-                        help="Path to checkpoint for fine-tuning")
+    # --- Loss Configuration ---
+    parser.add_argument("--losses", type=lambda s: s.split(","), default=["mse"], help="Comma-separated list of losses to use (e.g., mse,lpips,adv).")
+    parser.add_argument("--lambda_mse", type=float, default=1.0, help="Weight for the MSE loss term.")
+    parser.add_argument("--lambda_lpips", type=float, default=10.0, help="Weight for the LPIPS perceptual loss term.")
+    parser.add_argument("--lambda_adv", type=float, default=0.1, help="Weight for the adversarial loss term.")
 
-    # Filter out empty or whitespace-only arguments that can occur with
-    # multi-line shell commands.
+    # --- Misc & Technical ---
+    parser.add_argument("--device", type=str, default="cuda", help="Device to use for training.")
+    parser.add_argument("--load_model", type=str, default=None, help="Path to a full checkpoint to resume training.")
+    parser.add_argument("--sample_batch_size",  type=int, default=16, help="Number of samples to generate for visualization.")
+    parser.add_argument("--ema_decay", float, default=0.9999, help="Decay rate for the Exponential Moving Average of model weights.")
+    parser.add_argument("--use_amp", action="store_true", help="Enable Automatic Mixed Precision (AMP) for training.")
+    parser.add_argument("--no_sync_on_compute", action="store_true", help="Disable torchmetrics synchronization on each computation step.")
+
+    # Filter out empty or whitespace-only arguments that can occur with multi-line shell commands.
     filtered_args = [arg for arg in sys.argv[1:] if arg.strip()]
     args = parser.parse_args(filtered_args)
+
+    # Setup logging after parsing args
+    setup_logging(args.save_dir)
+
+    # Defer the main training process call
     train_proc(args)
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()
