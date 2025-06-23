@@ -353,3 +353,4 @@
 2025-06-23 04:44:17,700 - INFO - Epoch 156 | Train loss: 0.104652
 2025-06-23 04:44:17,826 - INFO - Epoch 156 | Validation loss: 0.077023
 2025-06-23 04:44:17,826 - INFO - Early stopping triggered by validation loss.
+2025-06-23 04:54:17,943 - ERROR - [Rank 0] Error during training: tensor or list of tensors expected, got <class 'torch._dynamo.eval_frame.OptimizedModule'>

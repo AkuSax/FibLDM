@@ -1,5 +1,7 @@
 __pycache__/
 data/
+data32/
+scripts/nohup.out
 logs/
 debug_samples/
 notebooks/

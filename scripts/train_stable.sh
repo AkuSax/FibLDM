@@ -27,22 +27,24 @@ echo "To monitor progress: tail -f $LOG_FILE"
 
 # Run with nohup for background execution
 nohup torchrun --nproc_per_node=2 ../main.py \
-    --latent_datapath ../data \
+    --latent_datapath ../data32 \
     --dataset_type latent \
-    --latent_dim 8 \
+    --vae_checkpoint ../model_runs/vae_run_2/vae_best.pth \
+    --latent_dim 32 \
     --latent_size 16 \
-    --batch_size 24 \
+    --batch_size 80 \
     --num_workers 4 \
     --num_epochs 500 \
     --use_amp \
     --use_compile \
-    --metrics_interval 25 \
+    --metrics_interval 5 \
     --save_interval 25 \
-    --losses mse \
+    --losses mse,latent_lpips \
     --lambda_mse 1.0 \
+    --lambda_latent_lpips 10.0 \
     --early_stop_patience 20 \
     --no_sync_on_compute \
-    --save_dir ../model_runs/full_run_3 > "$LOG_FILE" 2>&1 &
+    --save_dir ../model_runs/full_run_7 > "$LOG_FILE" 2>&1 &
 
 # Get the process ID
 TRAINING_PID=$!

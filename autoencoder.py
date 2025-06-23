@@ -4,26 +4,26 @@ import torch.nn as nn
 class VAE(nn.Module):
     def __init__(self, in_channels=1, latent_dim=8):
         super().__init__()
-        # A simple convolutional encoder for 16x16 latent
+        # A simple convolutional encoder for dim x dim latent
         self.encoder = nn.Sequential(
-            nn.Conv2d(in_channels, 64, kernel_size=4, stride=2, padding=1), # 256 -> 128
+            nn.Conv2d(in_channels, 64, kernel_size=4, stride=2, padding=1),
             nn.ReLU(),
-            nn.Conv2d(64, 128, kernel_size=4, stride=2, padding=1), # 128 -> 64
+            nn.Conv2d(64, 128, kernel_size=4, stride=2, padding=1), 
             nn.ReLU(),
-            nn.Conv2d(128, 256, kernel_size=4, stride=2, padding=1), # 64 -> 32
+            nn.Conv2d(128, 256, kernel_size=4, stride=2, padding=1), 
             nn.ReLU(),
-            nn.Conv2d(256, latent_dim * 2, kernel_size=4, stride=2, padding=1) # 32 -> 16
+            nn.Conv2d(256, latent_dim * 2, kernel_size=4, stride=2, padding=1)
         )
 
         # A corresponding decoder
         self.decoder = nn.Sequential(
-            nn.ConvTranspose2d(latent_dim, 256, kernel_size=4, stride=2, padding=1), # 16 -> 32
+            nn.ConvTranspose2d(latent_dim, 256, kernel_size=4, stride=2, padding=1),
             nn.ReLU(),
-            nn.ConvTranspose2d(256, 128, kernel_size=4, stride=2, padding=1), # 32 -> 64
+            nn.ConvTranspose2d(256, 128, kernel_size=4, stride=2, padding=1),
             nn.ReLU(),
-            nn.ConvTranspose2d(128, 64, kernel_size=4, stride=2, padding=1), # 64 -> 128
+            nn.ConvTranspose2d(128, 64, kernel_size=4, stride=2, padding=1),
             nn.ReLU(),
-            nn.ConvTranspose2d(64, in_channels, kernel_size=4, stride=2, padding=1), # 128 -> 256
+            nn.ConvTranspose2d(64, in_channels, kernel_size=4, stride=2, padding=1),
             nn.Tanh() # To output in [-1, 1] range like your original data
         )
 

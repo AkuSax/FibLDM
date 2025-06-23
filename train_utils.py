@@ -9,6 +9,7 @@ import math
 import os
 import csv
 import logging
+import torch.nn as nn
 
 import lpips
 import torchvision.utils as vutils
@@ -16,6 +17,24 @@ import pandas as pd
 
 from metrics import RealismMetrics
 from utils import EarlyStopper, EMA
+
+# Latent-style LPIPS feature extractor
+class LatentFeatureExtractor(nn.Module):
+    def __init__(self, in_channels):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Conv2d(in_channels, 32, kernel_size=3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(32, 64, kernel_size=3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(64, 128, kernel_size=3, padding=1),
+            nn.ReLU(inplace=True),
+        )
+        for param in self.net.parameters():
+            param.requires_grad = False
+
+    def forward(self, x):
+        return self.net(x)
 
 def train(
     model,
@@ -43,6 +62,12 @@ def train(
     lpips_loss = None
     if 'lpips' in args.losses:
         lpips_loss = lpips.LPIPS(net='alex').to(device)
+
+    # Initialize latent-style LPIPS feature extractor if needed
+    latent_lpips = None
+    if hasattr(args, 'lambda_latent_lpips') and args.lambda_latent_lpips > 0:
+        latent_lpips = LatentFeatureExtractor(in_channels=args.latent_dim).to(device)
+        latent_lpips.eval()
 
     # --- VAE and EMA setup ---
     vae = None
@@ -123,6 +148,15 @@ def train(
                     loss_mse = F.mse_loss(pred_noise, noise)
                     total_loss += args.lambda_mse * loss_mse
                     loss_dict['mse'] = loss_mse.item()
+
+                # --- Latent-style LPIPS Loss ---
+                if latent_lpips is not None:
+                    with torch.no_grad():
+                        feat_pred = latent_lpips(pred_noise)
+                        feat_target = latent_lpips(noise)
+                    latent_lpips_loss = torch.mean((feat_pred - feat_target) ** 2)
+                    total_loss += args.lambda_latent_lpips * latent_lpips_loss
+                    loss_dict['latent_lpips'] = latent_lpips_loss.item()
 
                 # --- Adversarial Loss (require predicting x0) ---
                 if 'adv' in args.losses:
@@ -243,10 +277,10 @@ def train(
                 model.eval()
                 local_real_images = []
                 local_fake_samples_decoded = []
-                manifest_path = os.path.join('../data', "manifest.csv")
+                manifest_path = os.path.join(args.latent_datapath, "manifest.csv")
                 manifest = pd.read_csv(manifest_path)
-                latent_dir = os.path.join('../data', "latents")
-                contour_dir = os.path.join('../data', "contours")
+                latent_dir = os.path.join(args.latent_datapath, "latents")
+                contour_dir = os.path.join(args.latent_datapath, "contours")
                 n_samples = min(args.sample_batch_size * 4, len(manifest))
                 with torch.no_grad():
                     for i in range(n_samples):

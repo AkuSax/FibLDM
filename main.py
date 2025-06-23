@@ -214,12 +214,15 @@ def train_proc(args):
 
         # Save EMA samples (rank 0 only)
         if dist.get_rank() == 0:
-            grid = vutils.make_grid(samples, nrow=4, normalize=True)
-            os.makedirs(args.save_dir, exist_ok=True)
-            plt.imsave(
-                os.path.join(args.save_dir, "ema_samples.png"),
-                grid.permute(1, 2, 0).cpu().numpy()
-            )
+            if isinstance(samples, torch.Tensor) or (isinstance(samples, list) and all(isinstance(x, torch.Tensor) for x in samples)):
+                grid = vutils.make_grid(samples, nrow=4, normalize=True)
+                os.makedirs(args.save_dir, exist_ok=True)
+                plt.imsave(
+                    os.path.join(args.save_dir, "ema_samples.png"),
+                    grid.permute(1, 2, 0).cpu().numpy()
+                )
+            else:
+                logging.warning(f"[Rank {local_rank}] Samples returned from ddpm_train are not a tensor or list of tensors. Skipping grid save.")
     except Exception as e:
         logging.error(f"[Rank {local_rank}] Error during training: {e}")
         import traceback
@@ -269,6 +272,7 @@ def main():
     parser.add_argument("--lambda_mse", type=float, default=1.0, help="Weight for the MSE loss term.")
     parser.add_argument("--lambda_lpips", type=float, default=10.0, help="Weight for the LPIPS perceptual loss term.")
     parser.add_argument("--lambda_adv", type=float, default=0.1, help="Weight for the adversarial loss term.")
+    parser.add_argument("--lambda_latent_lpips", type=float, default=0.0, help="Weight for the latent LPIPS loss.")
 
     # --- Misc & Technical ---
     parser.add_argument("--device", type=str, default="cuda", help="Device to use for training.")
