@@ -44,7 +44,7 @@ Once the VAE is trained, use it to encode the entire image dataset into latent v
 ```bash
 # Run the encoding script, pointing it to your trained VAE.
 python encode_dataset.py \
-    --csv_file ./data/small_label.csv \
+    --csv_file ./data/label.csv \
     --img_dir ./data/ \
     --vae_checkpoint ./vae_run_1/vae_best.pth \
     --output_dir ./data/latents_dataset
