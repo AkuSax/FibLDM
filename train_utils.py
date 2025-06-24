@@ -239,6 +239,23 @@ def train(
                     val_latents = val_latents.to(device)
                     val_contours_downsampled = val_contours_downsampled.to(device)
 
+                    # --- START: ADD THIS DEBUGGING BLOCK ---
+                    # This code will run only on the first visualization save to avoid spamming logs.
+                    if epoch == args.save_interval:
+                        print("\n" + "="*25 + " CONTOUR DEBUGGING " + "="*25)
+                        debug_contour = val_contours_downsampled[0]
+                        print(f"Shape of a single contour from val_loader: {debug_contour.shape}")
+                        print(f"Data type: {debug_contour.dtype}")
+                        print(f"Min value: {debug_contour.min():.4f}")
+                        print(f"Max value: {debug_contour.max():.4f}")
+                        print(f"Mean value: {debug_contour.mean():.4f}")
+                        print(f"Unique values: {torch.unique(debug_contour)}")
+                        debug_save_path = os.path.join(args.save_dir, 'debug_contour_from_loader.png')
+                        vutils.save_image(debug_contour, debug_save_path)
+                        print(f"Saved a sample raw contour to {debug_save_path}")
+                        print("="*69 + "\n")
+                    # --- END: ADD THIS DEBUGGING BLOCK ---
+
                     logging.info("Generating debug samples...")
                     # 1. Generate new clean latents with the LDM
                     ema.apply_shadow(model)
@@ -278,8 +295,9 @@ def train(
 
                     # Stack as rows: originals, contours, generated
                     # Upsample contours and generated to match originals' size for visualization
-                    contours = F.interpolate(contours, size=originals.shape[-2:], mode='nearest')
-                    generated = F.interpolate(generated, size=originals.shape[-2:], mode='nearest')
+                    contours = F.interpolate(contours, size=originals.shape[-2:], mode='bilinear', align_corners=False)
+                    # Remove redundant interpolation for generated images - they're already at correct size
+                    # generated = F.interpolate(generated, size=originals.shape[-2:], mode='nearest')
                     comparison_grid = torch.cat([originals, contours, generated], dim=0)
                     vutils.save_image(comparison_grid, os.path.join(save_path, f"comparison_{epoch:04d}.png"), nrow=num_show)
                     

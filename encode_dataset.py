@@ -3,6 +3,7 @@ import os
 import argparse
 from tqdm import tqdm
 import pandas as pd
+import torch.nn.functional as F
 
 from dataset import ContourDataset
 from autoencoder import VAE
@@ -33,18 +34,31 @@ def main(args):
         manifest = []
         for i in tqdm(range(len(dataset))):
             image, contour = dataset[i]
+            
+            # --- FIX: Apply correct preprocessing ---
+            # Normalize image to [0, 1] then to [-1, 1]
+            image = (image - image.min()) / (image.max() - image.min())
+            image = image * 2.0 - 1.0
+            image = image.float()
+
+            # Binarize contour
+            contour = (contour > 0.2).float()
+            
+            # --- NEW: Downsample contour to latent size during encoding ---
+            contour = F.interpolate(contour.unsqueeze(0), size=(16, 16), mode='nearest').squeeze(0)
+
             # Add batch dimension and send to device
             image = image.unsqueeze(0).to(device)
 
             # Encode the image to get the mean of the latent distribution
             mu, _ = vae.encode(image)
 
-            # Save the latent and contour
+            # Save the latent and the now-corrected contour
             latent_path = os.path.join(latent_dir, f"{i}.pt")
             contour_path = os.path.join(contour_dir, f"{i}.pt")
             
             torch.save(mu.cpu(), latent_path)
-            torch.save(contour, contour_path)
+            torch.save(contour.cpu(), contour_path)
             
             # Get original file info from the dataset's dataframe
             original_img_path = dataset.img_labels.iloc[i, 0]
