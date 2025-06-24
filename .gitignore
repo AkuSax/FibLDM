@@ -2,6 +2,7 @@ __pycache__/
 data/
 data32/
 data32_v2/
+model_runs/
 scripts/nohup.out
 logs/
 debug_samples/
