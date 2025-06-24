@@ -26,8 +26,6 @@ This approach significantly reduces computational requirements and training time
 
 ## Training Pipeline
 
-Training is a three-step process. You must complete them in order.
-
 ### Step 1: Train the Autoencoder
 
 First, train the VAE on the full-resolution images. This script will save the best-performing model checkpoint based on validation loss.
