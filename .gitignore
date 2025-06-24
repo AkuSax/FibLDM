@@ -3,6 +3,7 @@ data/
 data32/
 data32_v2/
 model_runs/
+interpolation_samples/
 scripts/nohup.out
 logs/
 debug_samples/
