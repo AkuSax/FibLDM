@@ -144,7 +144,7 @@ def train_proc(args):
         
         # Model + (optional) Discriminator
         if args.dataset_type == 'latent':
-            in_channels = args.latent_dim + args.contour_channels
+            in_channels = args.latent_dim  # Only latent channels; contour handled by FiLM
             out_channels = args.latent_dim
             current_img_size = args.latent_size
         else: # image

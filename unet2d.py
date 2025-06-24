@@ -236,87 +236,109 @@ class UNet2DLatent(nn.Module):
     """
     Simplified U-Net for latent space (16x16 inputs)
     3 downsampling layers for 16x16 input (256->128->64->32->16)
-    Now with time conditioning injected at every block (FiLM style)
+    Now with time and contour conditioning injected at every block (FiLM style)
     in_channels must be latent_dim + contour_channels
     out_channels must be latent_dim
     """
-    def __init__(self, img_size, in_channels, out_channels):
-        # These must match latent_dim + contour_channels and latent_dim, respectively
+    def __init__(self, img_size, in_channels, out_channels, contour_dim=64):
         print(f"[UNet2DLatent] Initializing with in_channels={in_channels}, out_channels={out_channels}")
         super().__init__()
-        time_dim = img_size * img_size
+        time_dim = 128
         self.time_mlp = nn.Sequential(
             SinusoidalPositionEmbeddings(time_dim),
-            nn.Linear(time_dim, time_dim),
+            nn.Linear(time_dim, time_dim * 4),
             nn.GELU(),
+            nn.Linear(time_dim * 4, time_dim),
         )
-        # Time projections for each block (scale and shift)
-        self.time_proj_inc = nn.Linear(time_dim, 64 * 2)
-        self.time_proj_down1 = nn.Linear(time_dim, 128 * 2)
-        self.time_proj_down2 = nn.Linear(time_dim, 256 * 2)
-        self.time_proj_down3 = nn.Linear(time_dim, 512 * 2)
-        self.time_proj_bot1 = nn.Linear(time_dim, 1024 * 2)
-        self.time_proj_up1 = nn.Linear(time_dim, 512 * 2)
-        self.time_proj_up2 = nn.Linear(time_dim, 256 * 2)
-        self.time_proj_up3 = nn.Linear(time_dim, 128 * 2)
-        self.time_proj_outc = nn.Linear(time_dim, 128 * 2)
-
-        self.inc = DoubleConv(in_channels, 64)
-        self.down1 = nn.Sequential(nn.MaxPool2d(2), DoubleConv(64, 128)) # 16x16 -> 8x8
-        self.down2 = nn.Sequential(nn.MaxPool2d(2), DoubleConv(128, 256)) # 8x8 -> 4x4
-        self.down3 = nn.Sequential(nn.MaxPool2d(2), DoubleConv(256, 512)) # 4x4 -> 2x2
-        self.bot1 = DoubleConv(512, 1024)
+        self.channels = [64, 128, 256, 512, 1024]
+        # Time FiLM projections
+        self.time_proj_inc = nn.Linear(time_dim, self.channels[0] * 2)
+        self.time_proj_down1 = nn.Linear(time_dim, self.channels[1] * 2)
+        self.time_proj_down2 = nn.Linear(time_dim, self.channels[2] * 2)
+        self.time_proj_down3 = nn.Linear(time_dim, self.channels[3] * 2)
+        self.time_proj_bot1 = nn.Linear(time_dim, self.channels[4] * 2)
+        self.time_proj_up1 = nn.Linear(time_dim, self.channels[3] * 2)
+        self.time_proj_up2 = nn.Linear(time_dim, self.channels[2] * 2)
+        self.time_proj_up3 = nn.Linear(time_dim, self.channels[1] * 2)
+        # Contour encoder: small CNN + global avg pool + MLP
+        self.contour_encoder = nn.Sequential(
+            nn.Conv2d(1, 16, 3, padding=1), nn.GELU(),
+            nn.Conv2d(16, 32, 3, padding=1), nn.GELU(),
+            nn.Conv2d(32, contour_dim, 3, padding=1), nn.GELU(),
+            nn.AdaptiveAvgPool2d(1),
+            nn.Flatten(),
+        )
+        # Contour FiLM projections
+        self.contour_proj_inc = nn.Linear(contour_dim, self.channels[0] * 2)
+        self.contour_proj_down1 = nn.Linear(contour_dim, self.channels[1] * 2)
+        self.contour_proj_down2 = nn.Linear(contour_dim, self.channels[2] * 2)
+        self.contour_proj_down3 = nn.Linear(contour_dim, self.channels[3] * 2)
+        self.contour_proj_bot1 = nn.Linear(contour_dim, self.channels[4] * 2)
+        self.contour_proj_up1 = nn.Linear(contour_dim, self.channels[3] * 2)
+        self.contour_proj_up2 = nn.Linear(contour_dim, self.channels[2] * 2)
+        self.contour_proj_up3 = nn.Linear(contour_dim, self.channels[1] * 2)
+        self.inc = DoubleConv(in_channels, self.channels[0])
+        self.down1 = nn.Sequential(nn.MaxPool2d(2), DoubleConv(self.channels[0], self.channels[1]))
+        self.down2 = nn.Sequential(nn.MaxPool2d(2), DoubleConv(self.channels[1], self.channels[2]))
+        self.down3 = nn.Sequential(nn.MaxPool2d(2), DoubleConv(self.channels[2], self.channels[3]))
+        self.bot1 = DoubleConv(self.channels[3], self.channels[4])
         self.up1 = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True)
-        self.upconv1 = DoubleConv(1024 + 256, 512)
+        self.upconv1 = DoubleConv(self.channels[4] + self.channels[2], self.channels[3])
         self.up2 = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True)
-        self.upconv2 = DoubleConv(512 + 128, 256)
+        self.upconv2 = DoubleConv(self.channels[3] + self.channels[1], self.channels[2])
         self.up3 = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True)
-        self.upconv3 = DoubleConv(256 + 64, 128)
-        self.outc = nn.Conv2d(128, out_channels, kernel_size=1)
+        self.upconv3 = DoubleConv(self.channels[2] + self.channels[0], self.channels[1])
+        self.outc = nn.Conv2d(self.channels[1], out_channels, kernel_size=1)
 
-    def forward(self, x, t):
+    def forward(self, x, t, contour):
         t_emb = self.time_mlp(t)
-        # Initial conv + time
+        c_emb = self.contour_encoder(contour)
+        # Initial conv + FiLM
         x1 = self.inc(x)
-        scale, shift = self.time_proj_inc(t_emb)[:, :, None, None].chunk(2, dim=1)
-        x1 = x1 * (scale + 1) + shift
-        # Down 1 + time
+        scale_t, shift_t = self.time_proj_inc(t_emb)[:, :, None, None].chunk(2, dim=1)
+        scale_c, shift_c = self.contour_proj_inc(c_emb)[:, :, None, None].chunk(2, dim=1)
+        x1 = x1 * (scale_t + scale_c + 1) + (shift_t + shift_c)
+        # Down 1 + FiLM
         x2 = self.down1(x1)
-        scale, shift = self.time_proj_down1(t_emb)[:, :, None, None].chunk(2, dim=1)
-        x2 = x2 * (scale + 1) + shift
-        # Down 2 + time
+        scale_t, shift_t = self.time_proj_down1(t_emb)[:, :, None, None].chunk(2, dim=1)
+        scale_c, shift_c = self.contour_proj_down1(c_emb)[:, :, None, None].chunk(2, dim=1)
+        x2 = x2 * (scale_t + scale_c + 1) + (shift_t + shift_c)
+        # Down 2 + FiLM
         x3 = self.down2(x2)
-        scale, shift = self.time_proj_down2(t_emb)[:, :, None, None].chunk(2, dim=1)
-        x3 = x3 * (scale + 1) + shift
-        # Down 3 + time
+        scale_t, shift_t = self.time_proj_down2(t_emb)[:, :, None, None].chunk(2, dim=1)
+        scale_c, shift_c = self.contour_proj_down2(c_emb)[:, :, None, None].chunk(2, dim=1)
+        x3 = x3 * (scale_t + scale_c + 1) + (shift_t + shift_c)
+        # Down 3 + FiLM
         x4 = self.down3(x3)
-        scale, shift = self.time_proj_down3(t_emb)[:, :, None, None].chunk(2, dim=1)
-        x4 = x4 * (scale + 1) + shift
-        # Bottleneck + time
+        scale_t, shift_t = self.time_proj_down3(t_emb)[:, :, None, None].chunk(2, dim=1)
+        scale_c, shift_c = self.contour_proj_down3(c_emb)[:, :, None, None].chunk(2, dim=1)
+        x4 = x4 * (scale_t + scale_c + 1) + (shift_t + shift_c)
+        # Bottleneck + FiLM
         x4 = self.bot1(x4)
-        scale, shift = self.time_proj_bot1(t_emb)[:, :, None, None].chunk(2, dim=1)
-        x4 = x4 * (scale + 1) + shift
-        # Up 1 + time
+        scale_t, shift_t = self.time_proj_bot1(t_emb)[:, :, None, None].chunk(2, dim=1)
+        scale_c, shift_c = self.contour_proj_bot1(c_emb)[:, :, None, None].chunk(2, dim=1)
+        x4 = x4 * (scale_t + scale_c + 1) + (shift_t + shift_c)
+        # Up 1 + FiLM
         x = self.up1(x4)
         x = torch.cat([x, x3], dim=1)
         x = self.upconv1(x)
-        scale, shift = self.time_proj_up1(t_emb)[:, :, None, None].chunk(2, dim=1)
-        x = x * (scale + 1) + shift
-        # Up 2 + time
+        scale_t, shift_t = self.time_proj_up1(t_emb)[:, :, None, None].chunk(2, dim=1)
+        scale_c, shift_c = self.contour_proj_up1(c_emb)[:, :, None, None].chunk(2, dim=1)
+        x = x * (scale_t + scale_c + 1) + (shift_t + shift_c)
+        # Up 2 + FiLM
         x = self.up2(x)
         x = torch.cat([x, x2], dim=1)
         x = self.upconv2(x)
-        scale, shift = self.time_proj_up2(t_emb)[:, :, None, None].chunk(2, dim=1)
-        x = x * (scale + 1) + shift
-        # Up 3 + time
+        scale_t, shift_t = self.time_proj_up2(t_emb)[:, :, None, None].chunk(2, dim=1)
+        scale_c, shift_c = self.contour_proj_up2(c_emb)[:, :, None, None].chunk(2, dim=1)
+        x = x * (scale_t + scale_c + 1) + (shift_t + shift_c)
+        # Up 3 + FiLM
         x = self.up3(x)
         x = torch.cat([x, x1], dim=1)
         x = self.upconv3(x)
-        scale, shift = self.time_proj_up3(t_emb)[:, :, None, None].chunk(2, dim=1)
-        x = x * (scale + 1) + shift
-        # Output conv + time
-        scale, shift = self.time_proj_outc(t_emb)[:, :, None, None].chunk(2, dim=1)
-        x = x * (scale + 1) + shift
+        scale_t, shift_t = self.time_proj_up3(t_emb)[:, :, None, None].chunk(2, dim=1)
+        scale_c, shift_c = self.contour_proj_up3(c_emb)[:, :, None, None].chunk(2, dim=1)
+        x = x * (scale_t + scale_c + 1) + (shift_t + shift_c)
         return self.outc(x)
 
 

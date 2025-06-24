@@ -134,12 +134,11 @@ def train(
             # Sample noise and noise the latents
             t = diffusion.sample_timesteps(latents.size(0)).to(device)
             x_t, noise = diffusion.noise_image(latents, t) # `noise_image` works on any tensor
-            x_in = torch.cat((x_t, contour), dim=1)
 
             optimizer.zero_grad()
 
             with autocast(device_type='cuda', dtype=torch.float16, enabled=args.use_amp):
-                pred_noise = model(x_in, t)
+                pred_noise = model(x_t, t, contour)
                 total_loss = 0
                 loss_dict = {}
 
@@ -212,10 +211,9 @@ def train(
 
                 t = diffusion.sample_timesteps(latents.size(0)).to(device)
                 x_t, noise = diffusion.noise_image(latents, t)
-                x_in = torch.cat((x_t, contour), dim=1)
                 
                 with autocast(device_type='cuda', dtype=torch.float16, enabled=args.use_amp):
-                    pred_noise = model(x_in, t)
+                    pred_noise = model(x_t, t, contour)
                     val_loss = F.mse_loss(pred_noise, noise) # Just use MSE for validation loss
                 
                 total_val_loss += val_loss.item()
@@ -262,9 +260,28 @@ def train(
                     save_path = os.path.join(args.save_dir, 'epoch_samples')
                     os.makedirs(save_path, exist_ok=True)
                     
-                    # Save a grid comparing VAE reconstruction to LDM's output
-                    comparison_grid = torch.cat([original_recons, generated_images])
-                    vutils.save_image(comparison_grid, os.path.join(save_path, f"comparison_{epoch:04d}.png"), nrow=val_latents.size(0))
+                    # New: Save a 3-row grid: originals | contours | generated
+                    num_show = min(10, val_latents.size(0))
+                    # Normalize all images to [0, 1] for visualization
+                    originals = original_recons[:num_show].clamp(-1, 1) * 0.5 + 0.5
+                    contours = val_contours_downsampled[:num_show].clamp(0, 1)
+                    generated = generated_images[:num_show].clamp(-1, 1) * 0.5 + 0.5
+
+                    def ensure_three_channels(x):
+                        if x.shape[1] == 1:
+                            return x.repeat(1, 3, 1, 1)
+                        return x
+
+                    originals = ensure_three_channels(originals)
+                    contours = ensure_three_channels(contours)
+                    generated = ensure_three_channels(generated)
+
+                    # Stack as rows: originals, contours, generated
+                    # Upsample contours and generated to match originals' size for visualization
+                    contours = F.interpolate(contours, size=originals.shape[-2:], mode='nearest')
+                    generated = F.interpolate(generated, size=originals.shape[-2:], mode='nearest')
+                    comparison_grid = torch.cat([originals, contours, generated], dim=0)
+                    vutils.save_image(comparison_grid, os.path.join(save_path, f"comparison_{epoch:04d}.png"), nrow=num_show)
                     
                     logging.info(f"Saved decoded debug samples for epoch {epoch}.")
 

@@ -1,0 +1,204 @@
+2025-06-24 12:57:59,393 - INFO - [Rank 0] Starting distributed training with 2 GPUs
+2025-06-24 12:57:59,394 - INFO - [Rank 0] Loading dataset...
+2025-06-24 12:57:59,406 - INFO - [Rank 0] Creating model...
+2025-06-24 12:57:59,835 - INFO - [Rank 0] Setting up diffusion...
+2025-06-24 12:57:59,858 - INFO - [Rank 0] Starting training...
+2025-06-24 12:58:09,982 - INFO - Epoch 0 | Train loss: 0.971777
+2025-06-24 12:58:12,012 - INFO - Epoch 0 | Validation loss: 0.793091
+2025-06-24 12:58:12,052 - INFO - Generating debug samples...
+2025-06-24 12:58:24,114 - INFO - [Rank 0] Starting distributed training with 2 GPUs
+2025-06-24 12:58:24,115 - INFO - [Rank 0] Loading dataset...
+2025-06-24 12:58:24,126 - INFO - [Rank 0] Creating model...
+2025-06-24 12:58:24,571 - INFO - [Rank 0] Setting up diffusion...
+2025-06-24 12:58:24,590 - INFO - [Rank 0] Starting training...
+2025-06-24 12:58:34,798 - INFO - Epoch 0 | Train loss: 0.971771
+2025-06-24 12:58:36,854 - INFO - Epoch 0 | Validation loss: 0.793050
+2025-06-24 12:58:36,888 - INFO - Generating debug samples...
+2025-06-24 12:59:26,320 - INFO - Saved decoded debug samples for epoch 0.
+2025-06-24 12:59:37,204 - INFO - Computing FID, KID, LPIPS, SSIM...
+2025-06-24 12:59:40,985 - INFO - Epoch 0 Metrics | fid: 549.5482 | kid: 0.8429 | kid_std: 0.0177 | lpips: 0.7486 | ssim: 0.0161
+2025-06-24 12:59:41,062 - INFO - Saved model checkpoint at ../model_runs/full_run_9/trained_models/model_epoch_0000.pth
+2025-06-24 12:59:43,634 - INFO - Epoch 1 | Train loss: 0.735880
+2025-06-24 12:59:43,740 - INFO - Epoch 1 | Validation loss: 0.583097
+2025-06-24 12:59:46,238 - INFO - Epoch 2 | Train loss: 0.606408
+2025-06-24 12:59:46,342 - INFO - Epoch 2 | Validation loss: 0.470747
+2025-06-24 12:59:48,832 - INFO - Epoch 3 | Train loss: 0.538134
+2025-06-24 12:59:48,934 - INFO - Epoch 3 | Validation loss: 0.423481
+2025-06-24 12:59:51,431 - INFO - Epoch 4 | Train loss: 0.495307
+2025-06-24 12:59:51,528 - INFO - Epoch 4 | Validation loss: 0.375840
+2025-06-24 12:59:53,987 - INFO - Epoch 5 | Train loss: 0.467343
+2025-06-24 12:59:54,089 - INFO - Epoch 5 | Validation loss: 0.368773
+2025-06-24 13:00:04,772 - INFO - Computing FID, KID, LPIPS, SSIM...
+2025-06-24 13:00:07,391 - INFO - Epoch 5 Metrics | fid: 559.9369 | kid: 0.8642 | kid_std: 0.0170 | lpips: 0.7425 | ssim: 0.0204
+2025-06-24 13:00:09,854 - INFO - Epoch 6 | Train loss: 0.448410
+2025-06-24 13:00:09,956 - INFO - Epoch 6 | Validation loss: 0.332835
+2025-06-24 13:00:12,429 - INFO - Epoch 7 | Train loss: 0.431379
+2025-06-24 13:00:12,535 - INFO - Epoch 7 | Validation loss: 0.326777
+2025-06-24 13:00:15,022 - INFO - Epoch 8 | Train loss: 0.419490
+2025-06-24 13:00:15,126 - INFO - Epoch 8 | Validation loss: 0.312790
+2025-06-24 13:00:17,580 - INFO - Epoch 9 | Train loss: 0.407151
+2025-06-24 13:00:17,682 - INFO - Epoch 9 | Validation loss: 0.308271
+2025-06-24 13:00:20,138 - INFO - Epoch 10 | Train loss: 0.391832
+2025-06-24 13:00:20,239 - INFO - Epoch 10 | Validation loss: 0.296136
+2025-06-24 13:00:30,882 - INFO - Computing FID, KID, LPIPS, SSIM...
+2025-06-24 13:00:33,506 - INFO - Epoch 10 Metrics | fid: 565.2927 | kid: 0.8761 | kid_std: 0.0164 | lpips: 0.7413 | ssim: 0.0214
+2025-06-24 13:00:35,927 - INFO - Epoch 11 | Train loss: 0.384681
+2025-06-24 13:00:36,029 - INFO - Epoch 11 | Validation loss: 0.288038
+2025-06-24 13:00:38,471 - INFO - Epoch 12 | Train loss: 0.373555
+2025-06-24 13:00:38,572 - INFO - Epoch 12 | Validation loss: 0.290319
+2025-06-24 13:00:41,133 - INFO - Epoch 13 | Train loss: 0.361282
+2025-06-24 13:00:41,237 - INFO - Epoch 13 | Validation loss: 0.276233
+2025-06-24 13:00:43,725 - INFO - Epoch 14 | Train loss: 0.348627
+2025-06-24 13:00:43,828 - INFO - Epoch 14 | Validation loss: 0.265384
+2025-06-24 13:00:46,367 - INFO - Epoch 15 | Train loss: 0.348248
+2025-06-24 13:00:46,469 - INFO - Epoch 15 | Validation loss: 0.252717
+2025-06-24 13:00:57,110 - INFO - Computing FID, KID, LPIPS, SSIM...
+2025-06-24 13:00:59,675 - INFO - Epoch 15 Metrics | fid: 567.6446 | kid: 0.8900 | kid_std: 0.0152 | lpips: 0.7368 | ssim: 0.0225
+2025-06-24 13:01:02,161 - INFO - Epoch 16 | Train loss: 0.335356
+2025-06-24 13:01:02,265 - INFO - Epoch 16 | Validation loss: 0.262051
+2025-06-24 13:01:04,727 - INFO - Epoch 17 | Train loss: 0.326398
+2025-06-24 13:01:04,830 - INFO - Epoch 17 | Validation loss: 0.253305
+2025-06-24 13:01:07,288 - INFO - Epoch 18 | Train loss: 0.321318
+2025-06-24 13:01:07,393 - INFO - Epoch 18 | Validation loss: 0.231120
+2025-06-24 13:01:09,847 - INFO - Epoch 19 | Train loss: 0.319294
+2025-06-24 13:01:09,953 - INFO - Epoch 19 | Validation loss: 0.233495
+2025-06-24 13:01:12,441 - INFO - Epoch 20 | Train loss: 0.307980
+2025-06-24 13:01:12,547 - INFO - Epoch 20 | Validation loss: 0.239867
+2025-06-24 13:01:23,232 - INFO - Computing FID, KID, LPIPS, SSIM...
+2025-06-24 13:01:25,870 - INFO - Epoch 20 Metrics | fid: 569.7940 | kid: 0.8854 | kid_std: 0.0154 | lpips: 0.7351 | ssim: 0.0227
+2025-06-24 13:01:28,342 - INFO - Epoch 21 | Train loss: 0.304144
+2025-06-24 13:01:28,444 - INFO - Epoch 21 | Validation loss: 0.216582
+2025-06-24 13:01:31,207 - INFO - Epoch 22 | Train loss: 0.302397
+2025-06-24 13:01:31,654 - INFO - Epoch 22 | Validation loss: 0.216627
+2025-06-24 13:01:34,148 - INFO - Epoch 23 | Train loss: 0.300494
+2025-06-24 13:01:34,252 - INFO - Epoch 23 | Validation loss: 0.227523
+2025-06-24 13:01:37,049 - INFO - Epoch 24 | Train loss: 0.289928
+2025-06-24 13:01:37,156 - INFO - Epoch 24 | Validation loss: 0.207980
+2025-06-24 13:01:39,602 - INFO - Epoch 25 | Train loss: 0.293458
+2025-06-24 13:01:39,708 - INFO - Epoch 25 | Validation loss: 0.211071
+2025-06-24 13:01:39,745 - INFO - Generating debug samples...
+2025-06-24 13:02:28,742 - INFO - Saved decoded debug samples for epoch 25.
+2025-06-24 13:02:39,404 - INFO - Computing FID, KID, LPIPS, SSIM...
+2025-06-24 13:02:42,058 - INFO - Epoch 25 Metrics | fid: 586.1639 | kid: 0.9239 | kid_std: 0.0187 | lpips: 0.7415 | ssim: 0.0225
+2025-06-24 13:02:42,153 - INFO - Saved model checkpoint at ../model_runs/full_run_9/trained_models/model_epoch_0025.pth
+2025-06-24 13:02:44,653 - INFO - Epoch 26 | Train loss: 0.289781
+2025-06-24 13:02:44,760 - INFO - Epoch 26 | Validation loss: 0.206635
+2025-06-24 13:02:47,271 - INFO - Epoch 27 | Train loss: 0.285444
+2025-06-24 13:02:47,371 - INFO - Epoch 27 | Validation loss: 0.198857
+2025-06-24 13:02:49,861 - INFO - Epoch 28 | Train loss: 0.284911
+2025-06-24 13:02:49,964 - INFO - Epoch 28 | Validation loss: 0.214445
+2025-06-24 13:02:52,453 - INFO - Epoch 29 | Train loss: 0.285273
+2025-06-24 13:02:52,558 - INFO - Epoch 29 | Validation loss: 0.193184
+2025-06-24 13:02:55,077 - INFO - Epoch 30 | Train loss: 0.281212
+2025-06-24 13:02:55,188 - INFO - Epoch 30 | Validation loss: 0.194345
+2025-06-24 13:03:05,888 - INFO - Computing FID, KID, LPIPS, SSIM...
+2025-06-24 13:03:08,516 - INFO - Epoch 30 Metrics | fid: 573.3411 | kid: 0.8960 | kid_std: 0.0187 | lpips: 0.7314 | ssim: 0.0235
+2025-06-24 13:03:11,005 - INFO - Epoch 31 | Train loss: 0.274300
+2025-06-24 13:03:11,108 - INFO - Epoch 31 | Validation loss: 0.211611
+2025-06-24 13:03:13,600 - INFO - Epoch 32 | Train loss: 0.274078
+2025-06-24 13:03:13,707 - INFO - Epoch 32 | Validation loss: 0.195863
+2025-06-24 13:03:16,196 - INFO - Epoch 33 | Train loss: 0.273445
+2025-06-24 13:03:16,297 - INFO - Epoch 33 | Validation loss: 0.200499
+2025-06-24 13:03:18,783 - INFO - Epoch 34 | Train loss: 0.271660
+2025-06-24 13:03:18,884 - INFO - Epoch 34 | Validation loss: 0.186352
+2025-06-24 13:03:21,370 - INFO - Epoch 35 | Train loss: 0.266086
+2025-06-24 13:03:21,473 - INFO - Epoch 35 | Validation loss: 0.194402
+2025-06-24 13:03:32,190 - INFO - Computing FID, KID, LPIPS, SSIM...
+2025-06-24 13:03:34,769 - INFO - Epoch 35 Metrics | fid: 582.5397 | kid: 0.9102 | kid_std: 0.0169 | lpips: 0.7263 | ssim: 0.0252
+2025-06-24 13:03:37,222 - INFO - Epoch 36 | Train loss: 0.268175
+2025-06-24 13:03:37,322 - INFO - Epoch 36 | Validation loss: 0.176776
+2025-06-24 13:03:39,773 - INFO - Epoch 37 | Train loss: 0.267171
+2025-06-24 13:03:39,871 - INFO - Epoch 37 | Validation loss: 0.183222
+2025-06-24 13:03:42,357 - INFO - Epoch 38 | Train loss: 0.264176
+2025-06-24 13:03:42,456 - INFO - Epoch 38 | Validation loss: 0.184397
+2025-06-24 13:03:44,986 - INFO - Epoch 39 | Train loss: 0.264445
+2025-06-24 13:03:45,089 - INFO - Epoch 39 | Validation loss: 0.185048
+2025-06-24 13:03:47,561 - INFO - Epoch 40 | Train loss: 0.265610
+2025-06-24 13:03:47,666 - INFO - Epoch 40 | Validation loss: 0.179760
+2025-06-24 13:03:58,432 - INFO - Computing FID, KID, LPIPS, SSIM...
+2025-06-24 13:04:01,173 - INFO - Epoch 40 Metrics | fid: 569.2191 | kid: 0.8918 | kid_std: 0.0167 | lpips: 0.7395 | ssim: 0.0269
+2025-06-24 13:04:03,635 - INFO - Epoch 41 | Train loss: 0.262896
+2025-06-24 13:04:03,740 - INFO - Epoch 41 | Validation loss: 0.189932
+2025-06-24 13:04:06,221 - INFO - Epoch 42 | Train loss: 0.261546
+2025-06-24 13:04:06,327 - INFO - Epoch 42 | Validation loss: 0.190465
+2025-06-24 13:04:08,792 - INFO - Epoch 43 | Train loss: 0.261684
+2025-06-24 13:04:08,893 - INFO - Epoch 43 | Validation loss: 0.184825
+2025-06-24 13:04:11,400 - INFO - Epoch 44 | Train loss: 0.258588
+2025-06-24 13:04:11,504 - INFO - Epoch 44 | Validation loss: 0.191080
+2025-06-24 13:04:13,950 - INFO - Epoch 45 | Train loss: 0.257285
+2025-06-24 13:04:14,055 - INFO - Epoch 45 | Validation loss: 0.184887
+2025-06-24 13:04:24,781 - INFO - Computing FID, KID, LPIPS, SSIM...
+2025-06-24 13:04:27,317 - INFO - Epoch 45 Metrics | fid: 570.9971 | kid: 0.8896 | kid_std: 0.0182 | lpips: 0.7286 | ssim: 0.0243
+2025-06-24 13:04:29,849 - INFO - Epoch 46 | Train loss: 0.261013
+2025-06-24 13:04:29,952 - INFO - Epoch 46 | Validation loss: 0.171759
+2025-06-24 13:04:32,507 - INFO - Epoch 47 | Train loss: 0.257445
+2025-06-24 13:04:32,617 - INFO - Epoch 47 | Validation loss: 0.181057
+2025-06-24 13:04:35,090 - INFO - Epoch 48 | Train loss: 0.256925
+2025-06-24 13:04:35,197 - INFO - Epoch 48 | Validation loss: 0.176108
+2025-06-24 13:04:37,739 - INFO - Epoch 49 | Train loss: 0.258171
+2025-06-24 13:04:37,841 - INFO - Epoch 49 | Validation loss: 0.180103
+2025-06-24 13:04:40,369 - INFO - Epoch 50 | Train loss: 0.254003
+2025-06-24 13:04:40,473 - INFO - Epoch 50 | Validation loss: 0.167436
+2025-06-24 13:04:40,510 - INFO - Generating debug samples...
+2025-06-24 13:05:29,628 - INFO - Saved decoded debug samples for epoch 50.
+2025-06-24 13:05:40,331 - INFO - Computing FID, KID, LPIPS, SSIM...
+2025-06-24 13:05:42,925 - INFO - Epoch 50 Metrics | fid: 557.4935 | kid: 0.8399 | kid_std: 0.0185 | lpips: 0.7223 | ssim: 0.0250
+2025-06-24 13:05:43,004 - INFO - Saved model checkpoint at ../model_runs/full_run_9/trained_models/model_epoch_0050.pth
+2025-06-24 13:05:45,551 - INFO - Epoch 51 | Train loss: 0.255816
+2025-06-24 13:05:45,653 - INFO - Epoch 51 | Validation loss: 0.183793
+2025-06-24 13:05:48,128 - INFO - Epoch 52 | Train loss: 0.256579
+2025-06-24 13:05:48,232 - INFO - Epoch 52 | Validation loss: 0.183880
+2025-06-24 13:05:50,758 - INFO - Epoch 53 | Train loss: 0.252995
+2025-06-24 13:05:50,861 - INFO - Epoch 53 | Validation loss: 0.164028
+2025-06-24 13:05:53,384 - INFO - Epoch 54 | Train loss: 0.249694
+2025-06-24 13:05:53,488 - INFO - Epoch 54 | Validation loss: 0.160212
+2025-06-24 13:05:55,982 - INFO - Epoch 55 | Train loss: 0.251832
+2025-06-24 13:05:56,086 - INFO - Epoch 55 | Validation loss: 0.167080
+2025-06-24 13:06:06,875 - INFO - Computing FID, KID, LPIPS, SSIM...
+2025-06-24 13:06:09,420 - INFO - Epoch 55 Metrics | fid: 571.7992 | kid: 0.8791 | kid_std: 0.0190 | lpips: 0.7226 | ssim: 0.0248
+2025-06-24 13:06:11,947 - INFO - Epoch 56 | Train loss: 0.249181
+2025-06-24 13:06:12,053 - INFO - Epoch 56 | Validation loss: 0.170567
+2025-06-24 13:06:14,498 - INFO - Epoch 57 | Train loss: 0.250838
+2025-06-24 13:06:14,605 - INFO - Epoch 57 | Validation loss: 0.167768
+2025-06-24 13:06:17,078 - INFO - Epoch 58 | Train loss: 0.250349
+2025-06-24 13:06:17,187 - INFO - Epoch 58 | Validation loss: 0.161936
+2025-06-24 13:06:19,700 - INFO - Epoch 59 | Train loss: 0.248202
+2025-06-24 13:06:19,805 - INFO - Epoch 59 | Validation loss: 0.180595
+2025-06-24 13:06:22,280 - INFO - Epoch 60 | Train loss: 0.249116
+2025-06-24 13:06:22,382 - INFO - Epoch 60 | Validation loss: 0.169696
+2025-06-24 13:06:33,092 - INFO - Computing FID, KID, LPIPS, SSIM...
+2025-06-24 13:06:35,649 - INFO - Epoch 60 Metrics | fid: 583.5341 | kid: 0.9046 | kid_std: 0.0192 | lpips: 0.7266 | ssim: 0.0268
+2025-06-24 13:06:38,175 - INFO - Epoch 61 | Train loss: 0.243725
+2025-06-24 13:06:38,277 - INFO - Epoch 61 | Validation loss: 0.163360
+2025-06-24 13:06:40,778 - INFO - Epoch 62 | Train loss: 0.249473
+2025-06-24 13:06:40,880 - INFO - Epoch 62 | Validation loss: 0.166307
+2025-06-24 13:06:43,375 - INFO - Epoch 63 | Train loss: 0.249817
+2025-06-24 13:06:43,479 - INFO - Epoch 63 | Validation loss: 0.160321
+2025-06-24 13:06:45,987 - INFO - Epoch 64 | Train loss: 0.249999
+2025-06-24 13:06:46,090 - INFO - Epoch 64 | Validation loss: 0.177234
+2025-06-24 13:06:48,575 - INFO - Epoch 65 | Train loss: 0.247729
+2025-06-24 13:06:48,676 - INFO - Epoch 65 | Validation loss: 0.163750
+2025-06-24 13:06:59,393 - INFO - Computing FID, KID, LPIPS, SSIM...
+2025-06-24 13:07:02,010 - INFO - Epoch 65 Metrics | fid: 578.0549 | kid: 0.8919 | kid_std: 0.0176 | lpips: 0.7254 | ssim: 0.0263
+2025-06-24 13:07:04,439 - INFO - Epoch 66 | Train loss: 0.245177
+2025-06-24 13:07:04,543 - INFO - Epoch 66 | Validation loss: 0.169989
+2025-06-24 13:07:07,045 - INFO - Epoch 67 | Train loss: 0.246277
+2025-06-24 13:07:07,150 - INFO - Epoch 67 | Validation loss: 0.175353
+2025-06-24 13:07:09,650 - INFO - Epoch 68 | Train loss: 0.245219
+2025-06-24 13:07:09,753 - INFO - Epoch 68 | Validation loss: 0.163873
+2025-06-24 13:07:12,260 - INFO - Epoch 69 | Train loss: 0.247793
+2025-06-24 13:07:12,362 - INFO - Epoch 69 | Validation loss: 0.173452
+2025-06-24 13:07:14,880 - INFO - Epoch 70 | Train loss: 0.246873
+2025-06-24 13:07:14,981 - INFO - Epoch 70 | Validation loss: 0.170859
+2025-06-24 13:07:25,706 - INFO - Computing FID, KID, LPIPS, SSIM...
+2025-06-24 13:07:28,579 - INFO - Epoch 70 Metrics | fid: 575.4893 | kid: 0.8834 | kid_std: 0.0203 | lpips: 0.7230 | ssim: 0.0264
+2025-06-24 13:07:31,037 - INFO - Epoch 71 | Train loss: 0.244430
+2025-06-24 13:07:31,143 - INFO - Epoch 71 | Validation loss: 0.170205
+2025-06-24 13:07:33,653 - INFO - Epoch 72 | Train loss: 0.246000
+2025-06-24 13:07:33,757 - INFO - Epoch 72 | Validation loss: 0.160889
+2025-06-24 13:07:36,229 - INFO - Epoch 73 | Train loss: 0.248251
+2025-06-24 13:07:36,335 - INFO - Epoch 73 | Validation loss: 0.168862
+2025-06-24 13:07:38,850 - INFO - Epoch 74 | Train loss: 0.244791
+2025-06-24 13:07:38,956 - INFO - Epoch 74 | Validation loss: 0.164361
+2025-06-24 13:07:38,956 - INFO - Early stopping triggered by validation loss.
+2025-06-24 13:17:39,069 - WARNING - [Rank 0] Samples returned from ddpm_train are not a tensor or list of tensors. Skipping grid save.

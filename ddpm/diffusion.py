@@ -86,14 +86,14 @@ class Diffusion:
                 for t in pbar:
                     t_batch = torch.ones(end_idx - i).to(self.device) * t
                     
-                    # Prepare input with condition
-                    if condition_chunk is not None:
-                        x_in = torch.cat([x_chunk, condition_chunk], dim=1)
-                    else:
-                        x_in = x_chunk
+                    # For FiLM-based models, do not concatenate; always use x_in = x_chunk
+                    x_in = x_chunk
                     
                     # Predict noise
-                    predicted_noise = model(x_in, t_batch)
+                    if is_latent and condition_chunk is not None:
+                        predicted_noise = model(x_in, t_batch, condition_chunk)
+                    else:
+                        predicted_noise = model(x_in, t_batch)
                     
                     # Denoise step
                     alpha = self.alpha[t]

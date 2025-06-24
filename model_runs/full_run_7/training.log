@@ -391,3 +391,4 @@
 2025-06-23 13:53:57,302 - INFO - Epoch 151 | Train loss: 0.187919
 2025-06-23 13:53:57,405 - INFO - Epoch 151 | Validation loss: 0.099819
 2025-06-23 13:53:57,405 - INFO - Early stopping triggered by validation loss.
+2025-06-23 14:03:57,575 - WARNING - [Rank 0] Samples returned from ddpm_train are not a tensor or list of tensors. Skipping grid save.
