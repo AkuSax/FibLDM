@@ -70,39 +70,36 @@ class ContourDataset(Dataset):
         return len(self.img_labels)
 
     def __getitem__(self, idx):
-        # print(self.img_dir)
-        # assert False
         img_name = self.img_labels.iloc[idx, 0]
         c_name = self.img_labels.iloc[idx, 1]
-        # print(img_name)
-        # print(c_name)
         img_path = os.path.join(self.img_dir, img_name)
         c_path = os.path.join(self.img_dir, c_name)
-        # print(img_path)
-        # print(c_path)
-        # assert False
         volume = readmat(img_path)
-        contour = readmat(c_path)
-
+        if c_path.lower().endswith('.png'):
+            # Load PNG mask as tensor, ensure it's float and binarized
+            contour = read_image(c_path).float() / 255.0
+            if contour.ndim == 3 and contour.shape[0] == 1:
+                pass  # already (1, H, W)
+            elif contour.ndim == 3 and contour.shape[0] > 1:
+                contour = contour[0:1]  # take first channel if RGB
+            else:
+                contour = contour.unsqueeze(0)
+            contour = (contour > 0.2).float()
+        else:
+            contour = readmat(c_path)
+            contour = (contour > 0.2).float()
         if self.istransform:
             rng_state = torch.random.get_rng_state()
-
             volume = volume.unsqueeze(0)
             contour = contour.unsqueeze(0)
             volume = self.transforms(volume)
             torch.random.set_rng_state(rng_state)
             contour = self.transforms(contour)
-
             volume = volume.squeeze(0)
             contour = contour.squeeze(0)
-            
             volume = (volume - volume.min()) / (volume.max() - volume.min())
-            # Normalize to [-1, 1] for diffusion model
             volume = volume * 2.0 - 1.0
             volume = volume.float()
-
-            contour = (contour>0.2).float()
-
         return volume, contour
 
 class LatentDataset(Dataset):

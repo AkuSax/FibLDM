@@ -8,10 +8,9 @@ import matplotlib.pyplot as plt
 def readmat(filename, device=None):
     m = loadmat(filename)
     L = list(m.keys())
-    # print(L)
+    if 'contour' in filename.lower():
+        print(f"Keys in {os.path.basename(filename)}: {L}")
     cube = m[L[3]]
-    # print(cube.dtype)
-    # assert False
     cube_tensor = torch.unsqueeze(torch.tensor(cube),0) # make another dimension for channels
     if device:
         cube_tensor=cube_tensor.to(device, dtype=torch.float)    

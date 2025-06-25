@@ -4,6 +4,11 @@ import argparse
 from tqdm import tqdm
 import pandas as pd
 import torch.nn.functional as F
+import torchvision.utils as vutils
+import numpy as np
+from skimage.measure import find_contours
+from skimage.draw import polygon
+import matplotlib.pyplot as plt
 
 from dataset import ContourDataset
 from autoencoder import VAE
@@ -18,9 +23,8 @@ def main(args):
     vae.eval()
 
     # --- Load Original Dataset ---
-    # We set istransform=False to get the raw, un-augmented images
     print("Loading original dataset...")
-    dataset = ContourDataset(label_file=args.csv_file, img_dir=args.img_dir, istransform=False)
+    dataset = ContourDataset(label_file=args.csv_file, img_dir=args.img_dir, istransform=True)
     
     # --- Create Directories for Latent Data ---
     latent_dir = os.path.join(args.output_dir, "latents")
@@ -30,44 +34,22 @@ def main(args):
 
     print(f"Encoding dataset and saving to {args.output_dir}...")
     with torch.no_grad():
-        # We need to save the mapping from original file to index
         manifest = []
         for i in tqdm(range(len(dataset))):
             image, contour = dataset[i]
-            
-            # --- FIX: Apply correct preprocessing ---
-            # Normalize image to [0, 1] then to [-1, 1]
-            image = (image - image.min()) / (image.max() - image.min())
-            image = image * 2.0 - 1.0
-            image = image.float()
-
-            # Binarize contour
-            contour = (contour > 0.2).float()
-            
-            # --- NEW: Downsample contour to latent size during encoding ---
-            contour = F.interpolate(contour.unsqueeze(0), size=(16, 16), mode='nearest').squeeze(0)
-
-            # Add batch dimension and send to device
             image = image.unsqueeze(0).to(device)
-
-            # Encode the image to get the mean of the latent distribution
             mu, _ = vae.encode(image)
-
-            # Save the latent and the now-corrected contour
             latent_path = os.path.join(latent_dir, f"{i}.pt")
             contour_path = os.path.join(contour_dir, f"{i}.pt")
-            
             torch.save(mu.cpu(), latent_path)
             torch.save(contour.cpu(), contour_path)
-            
-            # Get original file info from the dataset's dataframe
             original_img_path = dataset.img_labels.iloc[i, 0]
             manifest.append({"index": i, "original_file": original_img_path})
-
-    # Save manifest
     manifest_df = pd.DataFrame(manifest)
     manifest_df.to_csv(os.path.join(args.output_dir, "manifest.csv"), index=False)
     print("Encoding complete. Manifest saved.")
+
+    print("Debug image generation complete.")
 
 
 if __name__ == '__main__':
