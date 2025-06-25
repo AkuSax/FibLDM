@@ -1,4 +1,4 @@
-# generate_masks.py (Version 2 - Robust)
+# generate_masks.py (Version 6 - The Definitive & Safe Pipeline)
 import os
 import argparse
 from glob import glob
@@ -7,82 +7,86 @@ import numpy as np
 from PIL import Image
 from scipy.ndimage import binary_fill_holes
 from skimage.measure import label
-from skimage.morphology import binary_closing, binary_opening
+from skimage.morphology import binary_closing, binary_dilation, binary_erosion, disk
 
 from utils import readmat
 
-def segment_lungs(image_np):
+def definitive_lung_segmentation(image_np):
     """
-    Segments the lung regions from a CT scan using a multi-step,
-    data-adaptive approach.
+    Performs a highly robust, multi-step lung segmentation designed to prevent
+    failures on difficult or edge-case CT slices.
     """
-    # Step 1: Create a general mask of the patient's body to exclude air
-    # around the patient. We can do this with a simple threshold above the
-    # image's minimum value (which is usually the background air).
-    body_mask = image_np > (image_np.min() + 0.01)
+    # Step 1: Create a mask of the patient's body.
+    # This is a crucial first step to isolate the area of interest and
+    # remove all air surrounding the patient.
+    body_mask = np.zeros_like(image_np, dtype=np.uint8)
+    # Start with a generous threshold to get all tissue.
+    initial_body = image_np > 0.25
+    labeled_body, num_labels = label(initial_body, return_num=True)
+    if num_labels > 0:
+        # Find the largest connected component, which is the body.
+        region_areas = np.bincount(labeled_body.flat)[1:]
+        largest_label = np.argmax(region_areas) + 1
+        body_mask[labeled_body == largest_label] = 1
+    else: # If body isn't found, we can't proceed.
+        return body_mask
 
-    # Step 2: Invert the image so that the lungs (low density) become bright
-    # and other tissues (high density) become dark.
-    inverted_image = image_np.max() - image_np
+    # Step 2: Create the initial lung mask *within* the body mask.
+    # We use a more generous percentile now because we are in a confined space.
+    # This helps capture fibrotic tissue.
+    threshold = np.percentile(image_np[body_mask==1], 20)
+    lung_mask = (image_np < threshold) & (body_mask == 1)
+
+    # Step 3: Clean the lung mask and separate the two lung fields.
+    # Closing fills small holes and gaps inside the lungs.
+    lung_mask = binary_closing(lung_mask, disk(3))
+
+    # Erosion severs the connection via the trachea. This is a critical step.
+    # We use a slightly less aggressive erosion to protect small lung sections.
+    eroded_mask = binary_erosion(lung_mask, disk(1))
+
+    # Step 4: Label the remaining regions and keep the two largest.
+    labeled_lungs, num_lung_labels = label(eroded_mask, return_num=True)
+    if num_lung_labels < 2:
+        # If we can't find two separate lungs (e.g., top/bottom slice),
+        # we can fall back to the pre-erosion mask. This prevents blackouts.
+        final_mask = binary_fill_holes(lung_mask)
+        return (final_mask * 255).astype(np.uint8)
+
+    areas = np.bincount(labeled_lungs.flat)[1:]
+    num_to_keep = min(2, len(areas))
+    largest_labels = np.argsort(areas)[-num_to_keep:] + 1
     
-    # Step 3: Within the body mask, find the brightest regions, which now
-    # correspond to the lungs and airways.
-    # We use a threshold relative to the brightest parts of the inverted image.
-    lungs_threshold = np.quantile(inverted_image[body_mask], 0.9) # Find the 90th percentile brightness
-    potential_lungs = inverted_image > lungs_threshold
+    # Create the final mask by keeping only these regions.
+    final_mask = np.isin(labeled_lungs, largest_labels)
 
-    # Step 4: Clean up this potential lung mask.
-    # Closing operation will fill gaps within the lung regions.
-    # Opening will remove small, noisy bright spots.
-    potential_lungs = binary_closing(potential_lungs, np.ones((5,5)))
-    potential_lungs = binary_opening(potential_lungs, np.ones((5,5)))
-
-    # Step 5: Label each disconnected region.
-    labeled_image, num_labels = label(potential_lungs, return_num=True)
-    
-    # If no regions are found, return an empty mask.
-    if num_labels == 0:
-        return np.zeros_like(image_np, dtype=np.uint8)
-
-    # Step 6: Find the two largest regions by area. These will be the lungs.
-    # We calculate the area of each labeled region.
-    region_areas = np.bincount(labeled_image.flat)[1:] # Get area of each label > 0
-    
-    # Get the labels of the two largest regions.
-    # We add a check in case there's only one large region found.
-    num_regions_to_keep = min(2, len(region_areas))
-    if num_regions_to_keep == 0:
-        return np.zeros_like(image_np, dtype=np.uint8)
-        
-    largest_region_labels = np.argsort(region_areas)[-num_regions_to_keep:] + 1
-    
-    # Create the final lung mask by keeping only the largest regions.
-    lung_mask = np.isin(labeled_image, largest_region_labels)
-
-    # Step 7: Fill any holes inside the final lung masks for a solid shape.
-    final_mask = binary_fill_holes(lung_mask)
+    # Step 5: Restore lung size and fill holes.
+    # Dilate to counteract the erosion and then fill for a solid mask.
+    final_mask = binary_dilation(final_mask, disk(3))
+    final_mask = binary_fill_holes(final_mask)
 
     return (final_mask * 255).astype(np.uint8)
+
 
 def main(args):
     os.makedirs(args.output_dir, exist_ok=True)
     image_paths = [p for p in glob(os.path.join(args.img_dir, "*.mat")) if "contour" not in p.lower()]
-    
+
     if not image_paths:
         print(f"Error: No .mat files found in {args.img_dir}. Please check the directory.")
         return
         
     print(f"Found {len(image_paths)} CT scan images to process.")
 
-    for img_path in tqdm(image_paths):
+    for img_path in tqdm(image_paths, desc="Generating Definitive Masks"):
         try:
             image_tensor = readmat(img_path)
             image_np = image_tensor.squeeze().cpu().numpy()
+            
+            lung_mask_np = definitive_lung_segmentation(image_np)
 
-            lung_mask_np = segment_lungs(image_np)
-
-            if np.sum(lung_mask_np) == 0:
-                print(f"Warning: Empty mask generated for {os.path.basename(img_path)}. Check image intensity range.")
+            # Only save if the mask is substantial.
+            if np.sum(lung_mask_np) < 1000:
                 continue
 
             mask_image = Image.fromarray(lung_mask_np, mode='L')
@@ -96,7 +100,7 @@ def main(args):
     print(f"\nMask generation complete. Masks saved in: {args.output_dir}")
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description="Robust Lung Mask Generation Script")
+    parser = argparse.ArgumentParser(description="Definitive Lung Mask Generation Script")
     parser.add_argument("--img_dir", type=str, required=True, help="Directory containing the original .mat CT scan files.")
     parser.add_argument("--output_dir", type=str, required=True, help="Directory to save the new PNG masks.")
     args = parser.parse_args()
