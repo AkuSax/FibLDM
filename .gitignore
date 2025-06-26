@@ -1,4 +1,5 @@
 __pycache__/
+model_runs/
 data/
 controlnet_samples/
 interpolation_samples/
