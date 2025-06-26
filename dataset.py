@@ -102,6 +102,72 @@ class ContourDataset(Dataset):
             volume = volume.float()
         return volume, contour
 
+class ControlNetDataset(Dataset):
+    """
+    Dataset for ControlNet training that loads CT images and their contour conditioning signals.
+    This dataset is designed to work with the ControlNet architecture for precise contour control.
+    """
+    def __init__(self, label_file, img_dir, img_size=256, istransform=True):
+        self.img_labels = pd.read_csv(label_file)
+        self.img_dir = img_dir
+        self.img_size = img_size
+        self.istransform = istransform
+        
+        # Augmentation pipeline for ControlNet training
+        self.transforms = transforms.Compose([
+            transforms.RandomHorizontalFlip(p=0.5),
+            transforms.RandomAffine(
+                degrees=5,
+                translate=(0.05, 0.05)
+            ),
+            transforms.Lambda(lambda x: torch.clamp(x, -1.0, 1.0)),
+        ])
+
+    def __len__(self):
+        return len(self.img_labels)
+
+    def __getitem__(self, idx):
+        img_name = self.img_labels.iloc[idx, 0]
+        c_name = self.img_labels.iloc[idx, 1]
+        img_path = os.path.join(self.img_dir, img_name)
+        c_path = os.path.join(self.img_dir, c_name)
+        
+        # Load CT image
+        volume = readmat(img_path)
+        
+        # Load contour conditioning signal
+        if c_path.lower().endswith('.png'):
+            contour = read_image(c_path).float() / 255.0
+            if contour.ndim == 3 and contour.shape[0] == 1:
+                pass
+            elif contour.ndim == 3 and contour.shape[0] > 1:
+                contour = contour[0:1]
+            else:
+                contour = contour.unsqueeze(0)
+            contour = (contour > 0.2).float()
+        else:
+            contour = readmat(c_path)
+            contour = (contour > 0.2).float()
+        
+        # Apply synchronized transformations
+        if self.istransform:
+            rng_state = torch.random.get_rng_state()
+            volume = volume.unsqueeze(0)
+            contour = contour.unsqueeze(0)
+            volume = self.transforms(volume)
+            torch.random.set_rng_state(rng_state)
+            contour = self.transforms(contour)
+            volume = volume.squeeze(0)
+            contour = contour.squeeze(0)
+            volume = (volume - volume.min()) / (volume.max() - volume.min())
+            volume = volume * 2.0 - 1.0
+            volume = volume.float()
+        
+        return {
+            "image": volume,  # CT image for VAE encoding
+            "conditioning_image": contour  # Contour for ControlNet conditioning
+        }
+
 class LatentDataset(Dataset):
     """
     A dataset that loads pre-computed latent representations and their

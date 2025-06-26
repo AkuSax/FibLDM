@@ -1,6 +1,6 @@
 __pycache__/
 data/
-model_runs/
+controlnet_samples/
 interpolation_samples/
 scripts/nohup.out
 logs/
