@@ -15,13 +15,13 @@ DATA_PATH="/hot/Yi-Kuan/Fibrosis"
 CSV_PATH="/hot/Yi-Kuan/Fibrosis/label.csv"
 
 # Output directory
-SAVE_DIR="./model_runs/controlnet_run_1"
+SAVE_DIR="../model_runs/controlnet_run_3"
 
-# Training parameters
-BATCH_SIZE=32  # Increased batch size for better GPU utilization
+# Training parameters - OPTIMIZED FOR RTX A6000 (48GB VRAM)
+BATCH_SIZE=64 
 NUM_EPOCHS=100
-LEARNING_RATE=1e-4
-NUM_WORKERS=8  # Increased for better data loading
+LEARNING_RATE=2e-4
+NUM_WORKERS=12
 
 # Model parameters (must match your VAE and LDM)
 # VAE from vae_run_3 was trained with latent_dim=32

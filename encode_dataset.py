@@ -39,9 +39,10 @@ def main(args):
             image, contour = dataset[i]
             image = image.unsqueeze(0).to(device)
             mu, _ = vae.encode(image)
+            latent_mu = mu * 0.18215  # Scale the latents as required by LDM
             latent_path = os.path.join(latent_dir, f"{i}.pt")
             contour_path = os.path.join(contour_dir, f"{i}.pt")
-            torch.save(mu.cpu(), latent_path)
+            torch.save(latent_mu.cpu(), latent_path)
             torch.save(contour.cpu(), contour_path)
             original_img_path = dataset.img_labels.iloc[i, 0]
             manifest.append({"index": i, "original_file": original_img_path})

@@ -18,6 +18,7 @@ import logging
 from logging.handlers import RotatingFileHandler
 import torch.nn.functional as F
 from torch.cuda.amp import GradScaler, autocast  # Add mixed precision support
+from tqdm import tqdm  # Add tqdm for progress bars
 
 torch.backends.cudnn.benchmark = True
 torch.set_float32_matmul_precision('high')
@@ -90,7 +91,7 @@ def train_controlnet_proc(args):
         # Load pre-trained UNet
         unet = UNet2DLatent(
             img_size=args.latent_size,
-            in_channels=args.latent_dim + args.contour_channels,
+            in_channels=args.latent_dim,
             out_channels=args.latent_dim
         ).to(device)
         
@@ -107,6 +108,15 @@ def train_controlnet_proc(args):
         # Create combined model
         controlnet_unet = ControlNetUNet(unet=unet, controlnet=controlnet).to(device)
         controlnet_unet = DDP(controlnet_unet, device_ids=[local_rank], output_device=local_rank, find_unused_parameters=True)
+        
+        # Enable torch.compile for faster training (PyTorch 2.0+)
+        try:
+            controlnet_unet = torch.compile(controlnet_unet, mode="reduce-overhead")
+            if local_rank == 0:
+                logging.info(f"[Rank {local_rank}] Enabled torch.compile optimization")
+        except Exception as e:
+            if local_rank == 0:
+                logging.warning(f"[Rank {local_rank}] torch.compile not available: {e}")
         
         if local_rank == 0:
             logging.info(f"[Rank {local_rank}] Loading dataset...")
@@ -149,7 +159,7 @@ def train_controlnet_proc(args):
             pin_memory=True,
             prefetch_factor=4,
             persistent_workers=True,
-            drop_last=True
+            drop_last=False
         )
 
         # Optimizer only for ControlNet parameters
@@ -178,13 +188,18 @@ def train_controlnet_proc(args):
             total_loss = 0.0
             num_batches = 0
             
-            for batch_idx, batch in enumerate(train_loader):
+            # Create progress bar for training
+            train_pbar = tqdm(train_loader, desc=f"Epoch {epoch+1}/{args.num_epochs} [TRAIN]", 
+                             leave=False, ncols=100) if local_rank == 0 else train_loader
+            
+            for batch_idx, batch in enumerate(train_pbar):
                 images = batch['image'].to(device)
                 conditioning_images = batch['conditioning_image'].to(device)
                 
                 # Encode images to latent space using frozen VAE
                 with torch.no_grad():
                     mu, _ = vae.encode(images)
+                    mu = mu * 0.18215  # Scale the latents as required by LDM
                 
                 # Sample timesteps
                 t = diffusion.sample_timesteps(images.shape[0])
@@ -208,8 +223,14 @@ def train_controlnet_proc(args):
                 total_loss += loss.item()
                 num_batches += 1
                 
-                if batch_idx % 10 == 0 and local_rank == 0:
-                    logging.info(f"Epoch {epoch+1}/{args.num_epochs}, Batch {batch_idx}/{len(train_loader)}, Loss: {loss.item():.6f}")
+                # Update progress bar with current loss (only if it's a tqdm object)
+                if local_rank == 0 and hasattr(train_pbar, 'set_postfix'):
+                    avg_loss = total_loss / num_batches
+                    train_pbar.set_postfix({
+                        'Loss': f'{loss.item():.4f}',
+                        'Avg': f'{avg_loss:.4f}',
+                        'LR': f'{scheduler.get_last_lr()[0]:.2e}'
+                    })
             
             scheduler.step()
             
@@ -219,19 +240,30 @@ def train_controlnet_proc(args):
                 val_loss = 0.0
                 val_batches = 0
                 
+                # Create progress bar for validation
+                val_pbar = tqdm(val_loader, desc=f"Epoch {epoch+1}/{args.num_epochs} [VAL]", 
+                               leave=False, ncols=100) if local_rank == 0 else val_loader
+                
                 with torch.no_grad():
-                    for batch in val_loader:
+                    for batch in val_pbar:
                         images = batch['image'].to(device)
                         conditioning_images = batch['conditioning_image'].to(device)
                         
                         mu, _ = vae.encode(images)
+                        mu = mu * 0.18215  # Scale the latents as required by LDM
                         t = diffusion.sample_timesteps(images.shape[0])
                         noise = torch.randn_like(mu)
                         noisy_latents = diffusion.noise_image(mu, t)[0]
                         
                         predicted_noise = controlnet_unet(noisy_latents, t, conditioning_images)
-                        val_loss += F.mse_loss(predicted_noise, noise).item()
+                        batch_val_loss = F.mse_loss(predicted_noise, noise).item()
+                        val_loss += batch_val_loss
                         val_batches += 1
+                        
+                        # Update validation progress bar
+                        if local_rank == 0 and hasattr(val_pbar, 'set_postfix'):
+                            avg_val_loss = val_loss / val_batches
+                            val_pbar.set_postfix({'Val Loss': f'{avg_val_loss:.4f}'})
                 
                 avg_val_loss = val_loss / val_batches if val_batches > 0 else float('inf')
                 

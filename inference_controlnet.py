@@ -24,7 +24,7 @@ def load_models(args, device):
     # Load UNet
     unet = UNet2DLatent(
         img_size=args.latent_size,
-        in_channels=args.latent_dim + args.contour_channels,
+        in_channels=args.latent_dim,
         out_channels=args.latent_dim
     ).to(device)
     
@@ -101,7 +101,7 @@ def generate_with_controlnet(args):
                 x = 1 / torch.sqrt(alpha) * (x - ((1 - alpha) / (torch.sqrt(1 - alpha_hat))) * predicted_noise) + torch.sqrt(beta) * noise
             
             # Decode from latent space to image space
-            generated_image = vae.decode(x)
+            generated_image = vae.decode(x / 0.18215)  # Scale up latent before decoding
             
             # Save results
             output_path = os.path.join(args.output_dir, f"generated_{i:03d}.png")
