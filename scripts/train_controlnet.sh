@@ -15,7 +15,7 @@ DATA_PATH="/hot/Yi-Kuan/Fibrosis"
 CSV_PATH="/hot/Yi-Kuan/Fibrosis/label.csv"
 
 # Output directory
-SAVE_DIR="../model_runs/controlnet_run_3"
+SAVE_DIR="../model_runs/controlnet_run_4"
 
 # Training parameters - OPTIMIZED FOR RTX A6000 (48GB VRAM)
 BATCH_SIZE=64 

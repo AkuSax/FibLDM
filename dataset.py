@@ -100,6 +100,8 @@ class ContourDataset(Dataset):
             volume = (volume - volume.min()) / (volume.max() - volume.min())
             volume = volume * 2.0 - 1.0
             volume = volume.float()
+        # Normalize contour to [-1, 1] regardless of augmentation
+        contour = contour * 2.0 - 1.0
         return volume, contour
 
 class ControlNetDataset(Dataset):
@@ -163,6 +165,9 @@ class ControlNetDataset(Dataset):
             volume = volume * 2.0 - 1.0
             volume = volume.float()
         
+        # Normalize contour to [-1, 1] consistently
+        contour = contour * 2.0 - 1.0
+
         return {
             "image": volume,  # CT image for VAE encoding
             "conditioning_image": contour  # Contour for ControlNet conditioning
