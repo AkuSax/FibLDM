@@ -43,21 +43,19 @@ class Diffusion:
         return torch.randint(low=1, high = self.noise_step, size=(n,))
 
     def sample(self, model, n, condition=None, fast_sampling=False, latent_dim=None):
+        # Debug: Diffusion.sample - Initial call parameters
+        print(f"Diffusion.sample called - n: {n}, is_latent: {getattr(self, 'is_latent', False)}, img_size: {self.img_size}, latent_dim: {latent_dim}, condition provided: {condition is not None}")
         model.eval()
         with torch.no_grad():
-            # Get the underlying model if wrapped in DDP
-            if hasattr(model, 'module'):
-                model = model.module
-            
-            # Determine if we're in latent space or image space
-            is_latent = latent_dim is not None and latent_dim > 1
-            
+            is_latent = getattr(self, 'is_latent', False)
             if is_latent:
-                # For latent space: (n, latent_dim, latent_size, latent_size)
-                x = torch.randn(n, latent_dim, self.img_size, self.img_size).to(self.device)
+                if latent_dim is None:
+                    raise ValueError("latent_dim must be specified for latent space sampling.")
+                x = torch.randn(n, latent_dim, self.img_size, self.img_size, device=self.device)
+                # Debug: Initial random noise tensor for sampling
+                print(f"Diffusion.sample - Initial noisy x shape: {x.shape}")
             else:
-                # For image space: (n, 1, img_size, img_size)
-                x = torch.randn(n, 1, self.img_size, self.img_size).to(self.device)
+                x = torch.randn(n, 1, self.img_size, self.img_size, device=self.device)
             
             # Process in smaller chunks to save memory
             chunk_size = 16 if fast_sampling else 4  # Larger chunks for validation
@@ -89,6 +87,11 @@ class Diffusion:
                     # For FiLM-based models, do not concatenate; always use x_in = x_chunk
                     x_in = x_chunk
                     
+                    # Debug: Denoising loop - x_in shape and t_batch value
+                    print(f"  Denoising t={t.item()}: x_in shape: {x_in.shape}, t_batch: {t_batch[0].item()}")
+                    if condition_chunk is not None:
+                        print(f"  Denoising t={t.item()}: condition_chunk shape: {condition_chunk.shape}")
+                    
                     # Predict noise
                     if is_latent and condition_chunk is not None:
                         predicted_noise = model(x_in, t_batch, condition_chunk)
@@ -117,6 +120,8 @@ class Diffusion:
         
         # For latent space, don't rescale - keep in original range
         if is_latent:
+            # Debug: Final generated sample properties
+            print(f"Diffusion.sample - Final generated x shape: {x.shape}, Min: {x.min():.4f}, Max: {x.max():.4f}")
             return x
         else:
             # Rescale from [-1, 1] to [0, 1] for image space

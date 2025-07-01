@@ -100,6 +100,13 @@ class ContourDataset(Dataset):
             volume = (volume - volume.min()) / (volume.max() - volume.min())
             volume = volume * 2.0 - 1.0
             volume = volume.float()
+        # Debug: Check properties of transformed volume and contour
+        print(f"ContourDataset Item {idx}: Volume Shape: {volume.shape}, Min: {volume.min():.4f}, Max: {volume.max():.4f}, Dtype: {volume.dtype}")
+        print(f"ContourDataset Item {idx}: Contour Shape: {contour.shape}, Min: {contour.min():.4f}, Max: {contour.max():.4f}, Dtype: {contour.dtype}")
+        assert volume.shape[0] == 1, f"Volume channels must be 1, got {volume.shape[0]}"
+        assert contour.shape[0] == 1, f"Contour channels must be 1, got {contour.shape[0]}"
+        assert volume.min() >= -1.0 and volume.max() <= 1.0, "Volume should be in [-1, 1] range."
+        assert contour.min() >= 0.0 and contour.max() <= 1.0, "Contour should be in [0, 1] range (binary)."
         # Normalize contour to [-1, 1] regardless of augmentation
         contour = contour * 2.0 - 1.0
         return volume, contour
@@ -198,18 +205,23 @@ class LatentDataset(Dataset):
     def __getitem__(self, idx):
         latent_path = os.path.join(self.latent_dir, f"{idx}.pt")
         contour_path = os.path.join(self.contour_dir, f"{idx}.pt")
-        
         latent = torch.load(latent_path)
         contour = torch.load(contour_path)
-
-        # The VAE output is (1, latent_dim, 16, 16), so we squeeze the batch dim
+        # Debug: Check raw loaded latent and contour properties
+        print(f"LatentDataset Item {idx} - Raw Latent Shape: {latent.shape}, Dtype: {latent.dtype}")
+        print(f"LatentDataset Item {idx} - Raw Contour Shape: {contour.shape}, Dtype: {contour.dtype}, Min: {contour.min():.4f}, Max: {contour.max():.4f}")
+        # Assert latent is [1, C, H, W] for encoding output (where H,W is 16,16)
+        assert latent.ndim == 4 and latent.shape[2] == self.latent_size and latent.shape[3] == self.latent_size, \
+            f"Expected latent shape (1, C, {self.latent_size}, {self.latent_size}), got {latent.shape}"
         latent = latent.squeeze(0)
-
+        # Debug: Check squeezed latent shape
+        print(f"LatentDataset Item {idx} - Squeezed Latent Shape: {latent.shape}")
+        assert latent.ndim == 3 and latent.shape[1] == self.latent_size and latent.shape[2] == self.latent_size, \
+            f"Expected squeezed latent shape (C, {self.latent_size}, {self.latent_size}), got {latent.shape}"
         if self.downsample_contour:
-            # Downsample contour to match the spatial dimensions of the latent vector
-            # This is now only used for backward compatibility
             contour = F.interpolate(contour.unsqueeze(0), size=(self.latent_size, self.latent_size), mode='nearest')
             contour = contour.squeeze(0)
-            
+            # Debug: Check downsampled contour shape (if applicable)
+            print(f"LatentDataset Item {idx} - Downsampled Contour Shape (if applied): {contour.shape}")
         return latent, contour
     

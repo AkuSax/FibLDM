@@ -18,6 +18,8 @@ def vae_loss_function(recon_x, x, mu, logvar, kld_weight):
     return loss, recon_loss / x.size(0), kld_loss / x.size(0)
 
 def main(args):
+    # Enable anomaly detection for autograd
+    torch.autograd.set_detect_anomaly(True)
     # --- Setup ---
     device = "cuda" if torch.cuda.is_available() else "cpu"
     os.makedirs(args.save_dir, exist_ok=True)
@@ -43,10 +45,18 @@ def main(args):
         model.train()
         total_train_loss = 0
         pbar = tqdm(train_loader, desc=f"Epoch {epoch+1}/{args.epochs} [TRAIN]")
-        for images, _ in pbar:
+        for batch_idx, (images, _) in enumerate(train_loader):
+            # Debug: Check input image properties
+            print(f"Epoch {epoch+1} Train Input Images - Shape: {images.shape}, Min: {images.min():.4f}, Max: {images.max():.4f}, Dtype: {images.dtype}")
+            assert images.dtype == torch.float, "Input images to VAE should be float."
+            assert images.min() >= -1.0 and images.max() <= 1.0, "Input images to VAE should be in [-1, 1] range."
             images = images.to(device)
 
             recon_images, mu, logvar = model(images)
+            # Debug: Check VAE output properties
+            print(f"Epoch {epoch+1} Train VAE Output - Recon Shape: {recon_images.shape}, Recon Min: {recon_images.min():.4f}, Recon Max: {recon_images.max():.4f}, Mu Shape: {mu.shape}, Logvar Shape: {logvar.shape}")
+            assert recon_images.min() >= -1.0 - 1e-3 and recon_images.max() <= 1.0 + 1e-3, "VAE reconstructed images should be close to [-1, 1] range."
+
             loss, recon_loss, kld_loss = vae_loss_function(recon_images, images, mu, logvar, args.kld_weight)
 
             optimizer.zero_grad()
@@ -63,9 +73,16 @@ def main(args):
         total_val_loss = 0
         pbar_val = tqdm(val_loader, desc=f"Epoch {epoch+1}/{args.epochs} [VAL]")
         with torch.no_grad():
-            for images, _ in pbar_val:
+            for batch_idx, (images, _) in enumerate(val_loader):
+                # Debug: Check validation input image properties
+                print(f"Epoch {epoch+1} Val Input Images - Shape: {images.shape}, Min: {images.min():.4f}, Max: {images.max():.4f}, Dtype: {images.dtype}")
+                assert images.dtype == torch.float, "Validation images to VAE should be float."
+                assert images.min() >= -1.0 and images.max() <= 1.0, "Validation images to VAE should be in [-1, 1] range."
                 images = images.to(device)
                 recon_images, mu, logvar = model(images)
+                # Debug: Check VAE output properties (validation)
+                print(f"Epoch {epoch+1} Val VAE Output - Recon Shape: {recon_images.shape}, Recon Min: {recon_images.min():.4f}, Recon Max: {recon_images.max():.4f}, Mu Shape: {mu.shape}, Logvar Shape: {logvar.shape}")
+                assert recon_images.min() >= -1.0 - 1e-3 and recon_images.max() <= 1.0 + 1e-3, "VAE reconstructed images (val) should be close to [-1, 1] range."
                 loss, recon_loss, kld_loss = vae_loss_function(recon_images, images, mu, logvar, args.kld_weight)
                 total_val_loss += loss.item()
                 pbar_val.set_postfix(loss=f"{loss.item():.4f}", recon=f"{recon_loss.item():.4f}")

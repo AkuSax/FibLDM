@@ -2,7 +2,8 @@
 
 import torch
 import torch.nn.functional as F
-from torch.amp import autocast, GradScaler
+from torch.amp.autocast_mode import autocast
+from torch.amp.grad_scaler import GradScaler
 import torch.distributed as dist
 from tqdm import tqdm
 import math
@@ -111,6 +112,9 @@ def train(
             # LPIPS is now a validation metric, not a loss term during latent training
             writer.writerow(['epoch', 'fid', 'kid', 'lpips', 'ssim', 'train_loss'])
 
+    # Enable anomaly detection for autograd
+    torch.autograd.set_detect_anomaly(True)
+
     for epoch in range(args.num_epochs):
         model.train()
         if hasattr(train_loader.sampler, 'set_epoch'):
@@ -130,6 +134,14 @@ def train(
                 
             latents = latents.to(device, non_blocking=True)
             contour = contour.to(device, non_blocking=True) # Contour is already downsampled by LatentDataset
+
+            # Debug: Check inputs to the main UNet/ControlNet model
+            print(f"Train Loop - x_t shape: {latents.shape}, x_t min: {latents.min():.4f}, x_t max: {latents.max():.4f}")
+            print(f"Train Loop - t shape: {t.shape}, contour shape: {contour.shape}, contour min: {contour.min():.4f}, contour max: {contour.max():.4f}")
+            assert latents.shape[1] == args.latent_dim, f"Input latent channels ({latents.shape[1]}) to UNet must match latent_dim ({args.latent_dim})."
+            assert latents.shape[2] == args.latent_size and latents.shape[3] == args.latent_size, \
+                f"Input latent spatial size ({latents.shape[2]},{latents.shape[3]}) to UNet must match latent_size ({args.latent_size},{args.latent_size})."
+            assert contour.shape[1] == args.contour_channels, f"Contour channels ({contour.shape[1]}) must match expected ({args.contour_channels})."
 
             # Sample noise and noise the latents
             t = diffusion.sample_timesteps(latents.size(0)).to(device)
@@ -239,6 +251,9 @@ def train(
                     val_latents = val_latents.to(device)
                     val_contours_downsampled = val_contours_downsampled.to(device)
 
+                    # Debug: Check inputs to diffusion.sample during validation
+                    print(f"Validation Sample - Input to diffusion.sample: val_latents shape {val_latents.shape}, val_contours_downsampled shape {val_contours_downsampled.shape}")
+
                     # --- START: ADD THIS DEBUGGING BLOCK ---
                     # This code will run only on the first visualization save to avoid spamming logs.
                     if epoch == args.save_interval:
@@ -272,6 +287,11 @@ def train(
                     # This shows a side-by-side of VAE reconstruction vs. LDM's output
                     original_recons = vae.decode(val_latents)
                     generated_images = vae.decode(generated_latents)
+                    
+                    # Debug: Check decoded image properties before saving
+                    print(f"Validation Sample - original_recons shape: {original_recons.shape}, generated_images shape: {generated_images.shape}")
+                    print(f"Validation Sample - original_recons min/max: {original_recons.min():.4f}/{original_recons.max():.4f}")
+                    print(f"Validation Sample - generated_images min/max: {generated_images.min():.4f}/{generated_images.max():.4f}")
                     
                     # 3. Save for comparison
                     save_path = os.path.join(args.save_dir, 'epoch_samples')
@@ -320,6 +340,8 @@ def train(
                 with torch.no_grad():
                     for i in range(n_samples):
                         latent = torch.load(os.path.join(latent_dir, f"{i}.pt")).to(device)
+                        # Debug: Latent loaded for metrics
+                        print(f"Metrics Loop Item {i}: Loaded latent shape: {latent.shape}")
                         # Ensure latent is [1, C, H, W] before decoding
                         if latent.dim() == 3:
                             latent = latent.unsqueeze(0)
@@ -330,10 +352,14 @@ def train(
                         contour = torch.load(os.path.join(contour_dir, f"{i}.pt")).to(device)
                         # Decode the latent to get the real image
                         real_image = vae.decode(latent).squeeze(0)
+                        # Debug: Real image decoded for metrics
+                        print(f"Metrics Loop Item {i}: Real image decoded shape: {real_image.shape}, min: {real_image.min():.4f}, max: {real_image.max():.4f}")
                         # Generate a fake sample from the model
                         contour_downsampled = F.interpolate(contour.unsqueeze(0), size=(args.latent_size, args.latent_size), mode='nearest').squeeze(0)
                         fake_latent = diffusion.sample(model, 1, contour_downsampled.unsqueeze(0), fast_sampling=True, latent_dim=args.latent_dim).squeeze(0)
                         fake_image = vae.decode(fake_latent.unsqueeze(0)).squeeze(0)
+                        # Debug: Fake image decoded for metrics
+                        print(f"Metrics Loop Item {i}: Fake image decoded shape: {fake_image.shape}, min: {fake_image.min():.4f}, max: {fake_image.max():.4f}")
                         local_real_images.append(real_image.cpu())
                         local_fake_samples_decoded.append(fake_image.cpu())
                 if is_main:
