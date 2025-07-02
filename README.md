@@ -49,3 +49,42 @@ python encode_dataset.py \
     --vae_checkpoint ./vae_run_1/vae_best.pth \
     --output_dir ./data/latents_dataset
 ```
+
+### Step 3: Train the Base Latent Diffusion Model (LDM UNet)
+
+Before training ControlNet, you must train a base UNet (LDM) in the latent space. This model learns to denoise the VAE latents and is required for ControlNet to function properly.
+
+```bash
+# Example command (adjust arguments as needed):
+python train_ldm_unet.py \
+    --latent_data_dir ./data/latents_dataset \
+    --vae_checkpoint ./vae_run_1/vae_best.pth \
+    --save_dir ./model_runs/ldm_unet_run_1 \
+    --latent_dim 8 \
+    --latent_size 16
+```
+*This will create a `ldm_unet_run_1/` directory containing the `unet_best.pth` model checkpoint.*
+
+### Step 4: Train ControlNet (Conditioned LDM)
+
+When training ControlNet, you **must** provide the checkpoint of the trained base UNet using the `--unet_checkpoint` argument. This ensures the main UNet is not randomly initialized and frozen, but is a strong, pre-trained denoiser.
+
+```bash
+python train_controlnet.py \
+    --data_path ./data \
+    --csv_path label.csv \
+    --vae_checkpoint ./vae_run_1/vae_best.pth \
+    --unet_checkpoint ./model_runs/ldm_unet_run_1/unet_best.pth \
+    --save_dir ./model_runs/controlnet_run_1 \
+    --latent_dim 8 \
+    --latent_size 16 \
+    --contour_channels 1
+```
+
+### Latent Scaling Convention
+
+- **VAE Encoding:** The VAE mu output is scaled by `0.18215` before saving as a latent (i.e., `latent_mu = mu * 0.18215`).
+- **LDM/ControlNet Training:** Use the latents as loaded from disk; do **not** scale again.
+- **Inference:** After sampling a latent from the diffusion model, scale **up** by `1/0.18215` before decoding with the VAE.
+
+This ensures consistent latent magnitudes throughout the pipeline and prevents noisy generations due to scaling mismatches.

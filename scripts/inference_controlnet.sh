@@ -5,14 +5,14 @@
 
 # Model paths
 VAE_CHECKPOINT="../model_runs/vae_run_3/vae_best.pth"  # Updated to match training
-CONTROLNET_CHECKPOINT="../model_runs/controlnet_run_4/controlnet_epoch_20.pth"  # Adjust epoch number
+CONTROLNET_CHECKPOINT="../model_runs/controlnet_run_5/controlnet_epoch_25.pth"  # Adjust epoch number
 
 # Data paths
 DATA_PATH="/hot/Yi-Kuan/Fibrosis"  # Updated to match training
 CSV_PATH="/hot/Yi-Kuan/Fibrosis/label.csv"  # Updated to match training
 
 # Output directory
-OUTPUT_DIR="../model_runs/controlnet_run_4/controlnet_samples"
+OUTPUT_DIR="../model_runs/controlnet_run_5/controlnet_samples"
 
 # Generation parameters
 NUM_SAMPLES=20

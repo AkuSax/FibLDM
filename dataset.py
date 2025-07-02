@@ -207,21 +207,14 @@ class LatentDataset(Dataset):
         contour_path = os.path.join(self.contour_dir, f"{idx}.pt")
         latent = torch.load(latent_path)
         contour = torch.load(contour_path)
-        # Debug: Check raw loaded latent and contour properties
-        print(f"LatentDataset Item {idx} - Raw Latent Shape: {latent.shape}, Dtype: {latent.dtype}")
-        print(f"LatentDataset Item {idx} - Raw Contour Shape: {contour.shape}, Dtype: {contour.dtype}, Min: {contour.min():.4f}, Max: {contour.max():.4f}")
         # Assert latent is [1, C, H, W] for encoding output (where H,W is 16,16)
         assert latent.ndim == 4 and latent.shape[2] == self.latent_size and latent.shape[3] == self.latent_size, \
             f"Expected latent shape (1, C, {self.latent_size}, {self.latent_size}), got {latent.shape}"
         latent = latent.squeeze(0)
-        # Debug: Check squeezed latent shape
-        print(f"LatentDataset Item {idx} - Squeezed Latent Shape: {latent.shape}")
         assert latent.ndim == 3 and latent.shape[1] == self.latent_size and latent.shape[2] == self.latent_size, \
             f"Expected squeezed latent shape (C, {self.latent_size}, {self.latent_size}), got {latent.shape}"
         if self.downsample_contour:
             contour = F.interpolate(contour.unsqueeze(0), size=(self.latent_size, self.latent_size), mode='nearest')
             contour = contour.squeeze(0)
-            # Debug: Check downsampled contour shape (if applicable)
-            print(f"LatentDataset Item {idx} - Downsampled Contour Shape (if applied): {contour.shape}")
         return latent, contour
     

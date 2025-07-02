@@ -95,10 +95,10 @@ def train_controlnet_proc(args):
             out_channels=args.latent_dim
         ).to(device)
         
-        if args.unet_checkpoint:
-            unet.load_state_dict(torch.load(args.unet_checkpoint, map_location=device))
-            logging.info(f"[Rank {local_rank}] Loaded pre-trained UNet from {args.unet_checkpoint}")
-        
+        if not args.unet_checkpoint:
+            raise ValueError("You must provide --unet_checkpoint (a trained LDM UNet checkpoint) for ControlNet training.")
+        unet.load_state_dict(torch.load(args.unet_checkpoint, map_location=device))
+        logging.info(f"[Rank {local_rank}] Loaded pre-trained UNet from {args.unet_checkpoint}")
         # Freeze the main UNet
         unet.requires_grad_(False)
         
@@ -199,7 +199,7 @@ def train_controlnet_proc(args):
                 # Encode images to latent space using frozen VAE
                 with torch.no_grad():
                     mu, _ = vae.encode(images)
-                    mu = mu * 0.18215  # Scale the latents as required by LDM
+                    #mu = mu * 0.18215  # Scale the latents as required by LDM
                 
                 # Sample timesteps
                 t = diffusion.sample_timesteps(images.shape[0])
@@ -224,7 +224,7 @@ def train_controlnet_proc(args):
                 num_batches += 1
                 
                 # Update progress bar with current loss (only if it's a tqdm object)
-                if local_rank == 0 and hasattr(train_pbar, 'set_postfix'):
+                if local_rank == 0 and isinstance(train_pbar, tqdm):
                     avg_loss = total_loss / num_batches
                     train_pbar.set_postfix({
                         'Loss': f'{loss.item():.4f}',
@@ -261,7 +261,7 @@ def train_controlnet_proc(args):
                         val_batches += 1
                         
                         # Update validation progress bar
-                        if local_rank == 0 and hasattr(val_pbar, 'set_postfix'):
+                        if local_rank == 0 and isinstance(val_pbar, tqdm):
                             avg_val_loss = val_loss / val_batches
                             val_pbar.set_postfix({'Val Loss': f'{avg_val_loss:.4f}'})
                 
@@ -307,7 +307,7 @@ def main():
     
     # --- Pre-trained Model Paths ---
     parser.add_argument("--vae_checkpoint", type=str, required=True, help="Path to the pre-trained VAE checkpoint.")
-    parser.add_argument("--unet_checkpoint", type=str, default=None, help="Path to the pre-trained UNet checkpoint (optional).")
+    parser.add_argument("--unet_checkpoint", type=str, required=True, help="Path to the pre-trained UNet checkpoint (REQUIRED: must be a trained LDM UNet, not randomly initialized).")
     
     # --- Training Hyperparameters ---
     parser.add_argument("--num_epochs", type=int, default=100, help="Total number of training epochs.")

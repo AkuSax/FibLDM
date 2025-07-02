@@ -9,15 +9,16 @@ NUM_GPUS=1
 
 # Paths to your pre-trained models
 VAE_CHECKPOINT="../model_runs/vae_run_3/vae_best.pth"
+UNET_CHECKPOINT="../model_runs/ldm_unet_run_1/unet_best.pth" 
 
 # Data paths
 DATA_PATH="/hot/Yi-Kuan/Fibrosis"
 CSV_PATH="/hot/Yi-Kuan/Fibrosis/label.csv"
 
 # Output directory
-SAVE_DIR="../model_runs/controlnet_run_4"
+SAVE_DIR="../model_runs/controlnet_run_6"
 
-# Training parameters - OPTIMIZED FOR RTX A6000 (48GB VRAM)
+# Training parameters
 BATCH_SIZE=64 
 NUM_EPOCHS=100
 LEARNING_RATE=2e-4
@@ -50,6 +51,7 @@ torchrun --nproc_per_node=$NUM_GPUS \
     --csv_path $CSV_PATH \
     --save_dir $SAVE_DIR \
     --vae_checkpoint $VAE_CHECKPOINT \
+    --unet_checkpoint $UNET_CHECKPOINT \
     --num_epochs $NUM_EPOCHS \
     --batch_size $BATCH_SIZE \
     --lr $LEARNING_RATE \

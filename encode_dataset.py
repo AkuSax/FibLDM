@@ -45,13 +45,12 @@ def main(args):
             print(f"Encoding Loop Item {i}: VAE mu shape: {mu.shape}")
             assert mu.shape[1] == args.latent_dim, f"VAE mu channels ({mu.shape[1]}) do not match latent_dim ({args.latent_dim})."
             assert mu.shape[2] == 16 and mu.shape[3] == 16, f"VAE mu spatial size expected (16,16), got ({mu.shape[2]}, {mu.shape[3]})."
-            latent_mu = mu * 0.18215
-            # Debug: Check scaled latent properties before saving
-            print(f"Encoding Loop Item {i}: Scaled Latent (mu) - Shape: {latent_mu.shape}, Min: {latent_mu.min():.4f}, Max: {latent_mu.max():.4f}")
-            assert latent_mu.ndim == 4 and latent_mu.shape[0] == 1, "Scaled latent should have batch dim of 1."
+            # Debug: Check latent properties before saving
+            print(f"Encoding Loop Item {i}: Latent (mu) - Shape: {mu.shape}, Min: {mu.min():.4f}, Max: {mu.max():.4f}")
+            assert mu.ndim == 4 and mu.shape[0] == 1, "Latent should have batch dim of 1."
             latent_path = os.path.join(latent_dir, f"{i}.pt")
             contour_path = os.path.join(contour_dir, f"{i}.pt")
-            torch.save(latent_mu.cpu(), latent_path)
+            torch.save(mu.cpu(), latent_path)
             torch.save(contour.cpu(), contour_path)
             original_img_path = dataset.img_labels.iloc[i, 0]
             manifest.append({"index": i, "original_file": original_img_path})

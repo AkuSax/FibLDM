@@ -275,52 +275,92 @@ class UNet2DLatent(nn.Module):
         self.upconv3 = DoubleConv(self.channels[2] + self.channels[0], self.channels[1])
         self.outc = nn.Conv2d(self.channels[1], out_channels, kernel_size=1)
 
-    def forward(self, x, t, control_residuals):
-        t_emb = self.time_mlp(t)
-        # Initial conv + FiLM + control
-        x1 = self.inc(x)
-        scale_t, shift_t = self.time_proj_inc(t_emb)[:, :, None, None].chunk(2, dim=1)
-        x1 = x1 * (scale_t + 1) + shift_t
-        x1 = x1 + control_residuals.pop(0)
-        # Down 1 + FiLM + control
-        x2 = self.down1(x1)
-        scale_t, shift_t = self.time_proj_down1(t_emb)[:, :, None, None].chunk(2, dim=1)
-        x2 = x2 * (scale_t + 1) + shift_t
-        x2 = x2 + control_residuals.pop(0)
-        # Down 2 + FiLM + control
-        x3 = self.down2(x2)
-        scale_t, shift_t = self.time_proj_down2(t_emb)[:, :, None, None].chunk(2, dim=1)
-        x3 = x3 * (scale_t + 1) + shift_t
-        x3 = x3 + control_residuals.pop(0)
-        # Down 3 + FiLM + control
-        x4 = self.down3(x3)
-        scale_t, shift_t = self.time_proj_down3(t_emb)[:, :, None, None].chunk(2, dim=1)
-        x4 = x4 * (scale_t + 1) + shift_t
-        x4 = x4 + control_residuals.pop(0)
-        # Bottleneck + FiLM + control
-        x4 = self.bot1(x4)
-        scale_t, shift_t = self.time_proj_bot1(t_emb)[:, :, None, None].chunk(2, dim=1)
-        x4 = x4 * (scale_t + 1) + shift_t
-        x4 = x4 + control_residuals.pop(0)
-        # Up 1 + FiLM
-        x = self.up1(x4)
-        x = torch.cat([x, x3], dim=1)
-        x = self.upconv1(x)
-        scale_t, shift_t = self.time_proj_up1(t_emb)[:, :, None, None].chunk(2, dim=1)
-        x = x * (scale_t + 1) + shift_t
-        # Up 2 + FiLM
-        x = self.up2(x)
-        x = torch.cat([x, x2], dim=1)
-        x = self.upconv2(x)
-        scale_t, shift_t = self.time_proj_up2(t_emb)[:, :, None, None].chunk(2, dim=1)
-        x = x * (scale_t + 1) + shift_t
-        # Up 3 + FiLM
-        x = self.up3(x)
-        x = torch.cat([x, x1], dim=1)
-        x = self.upconv3(x)
-        scale_t, shift_t = self.time_proj_up3(t_emb)[:, :, None, None].chunk(2, dim=1)
-        x = x * (scale_t + 1) + shift_t
-        return self.outc(x)
+    def forward(self, x, t, control_residuals=None):
+        # If control_residuals is None, run as standard UNet (LDM training)
+        if control_residuals is None:
+            # Standard UNet2DLatent forward pass (no ControlNet residuals)
+            t_emb = self.time_mlp(t)
+            # Initial conv + FiLM
+            x1 = self.inc(x)
+            scale_t, shift_t = self.time_proj_inc(t_emb)[:, :, None, None].chunk(2, dim=1)
+            x1 = x1 * (scale_t + 1) + shift_t
+            # Down 1 + FiLM
+            x2 = self.down1(x1)
+            scale_t, shift_t = self.time_proj_down1(t_emb)[:, :, None, None].chunk(2, dim=1)
+            x2 = x2 * (scale_t + 1) + shift_t
+            # Down 2 + FiLM
+            x3 = self.down2(x2)
+            scale_t, shift_t = self.time_proj_down2(t_emb)[:, :, None, None].chunk(2, dim=1)
+            x3 = x3 * (scale_t + 1) + shift_t
+            # Down 3 + FiLM
+            x4 = self.down3(x3)
+            scale_t, shift_t = self.time_proj_down3(t_emb)[:, :, None, None].chunk(2, dim=1)
+            x4 = x4 * (scale_t + 1) + shift_t
+            # Bottleneck + FiLM
+            x4 = self.bot1(x4)
+            scale_t, shift_t = self.time_proj_bot1(t_emb)[:, :, None, None].chunk(2, dim=1)
+            x4 = x4 * (scale_t + 1) + shift_t
+            # Up 1 + FiLM
+            x = self.up1(x4)
+            x = torch.cat([x, x3], dim=1)
+            x = self.upconv1(x)
+            scale_t, shift_t = self.time_proj_up1(t_emb)[:, :, None, None].chunk(2, dim=1)
+            x = x * (scale_t + 1) + shift_t
+            # Up 2 + FiLM
+            x = self.up2(x)
+            x = torch.cat([x, x2], dim=1)
+            x = self.upconv2(x)
+            scale_t, shift_t = self.time_proj_up2(t_emb)[:, :, None, None].chunk(2, dim=1)
+            x = x * (scale_t + 1) + shift_t
+            # Up 3 + FiLM
+            x = self.up3(x)
+            x = torch.cat([x, x1], dim=1)
+            x = self.upconv3(x)
+            scale_t, shift_t = self.time_proj_up3(t_emb)[:, :, None, None].chunk(2, dim=1)
+            x = x * (scale_t + 1) + shift_t
+            return self.outc(x)
+        else:
+            # ControlNet: inject control_residuals at each block
+            t_emb = self.time_mlp(t)
+            # Initial conv + FiLM + control
+            x1 = self.inc(x) + control_residuals[0]
+            scale_t, shift_t = self.time_proj_inc(t_emb)[:, :, None, None].chunk(2, dim=1)
+            x1 = x1 * (scale_t + 1) + shift_t
+            # Down 1 + FiLM + control
+            x2 = self.down1(x1) + control_residuals[1]
+            scale_t, shift_t = self.time_proj_down1(t_emb)[:, :, None, None].chunk(2, dim=1)
+            x2 = x2 * (scale_t + 1) + shift_t
+            # Down 2 + FiLM + control
+            x3 = self.down2(x2) + control_residuals[2]
+            scale_t, shift_t = self.time_proj_down2(t_emb)[:, :, None, None].chunk(2, dim=1)
+            x3 = x3 * (scale_t + 1) + shift_t
+            # Down 3 + FiLM + control
+            x4 = self.down3(x3) + control_residuals[3]
+            scale_t, shift_t = self.time_proj_down3(t_emb)[:, :, None, None].chunk(2, dim=1)
+            x4 = x4 * (scale_t + 1) + shift_t
+            # Bottleneck + FiLM + control
+            x4 = self.bot1(x4) + control_residuals[4]
+            scale_t, shift_t = self.time_proj_bot1(t_emb)[:, :, None, None].chunk(2, dim=1)
+            x4 = x4 * (scale_t + 1) + shift_t
+            # Up 1 + FiLM
+            x = self.up1(x4)
+            x = torch.cat([x, x3], dim=1)
+            x = self.upconv1(x)
+            scale_t, shift_t = self.time_proj_up1(t_emb)[:, :, None, None].chunk(2, dim=1)
+            x = x * (scale_t + 1) + shift_t
+            # Up 2 + FiLM
+            x = self.up2(x)
+            x = torch.cat([x, x2], dim=1)
+            x = self.upconv2(x)
+            scale_t, shift_t = self.time_proj_up2(t_emb)[:, :, None, None].chunk(2, dim=1)
+            x = x * (scale_t + 1) + shift_t
+            # Up 3 + FiLM
+            x = self.up3(x)
+            x = torch.cat([x, x1], dim=1)
+            x = self.upconv3(x)
+            scale_t, shift_t = self.time_proj_up3(t_emb)[:, :, None, None].chunk(2, dim=1)
+            x = x * (scale_t + 1) + shift_t
+            return self.outc(x)
 
 
 def get_model(img_size=256, in_channels=1, out_channels=1, time_dim=None, pretrained_ckpt=None):
