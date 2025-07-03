@@ -20,7 +20,6 @@ class DoubleConv(nn.Module):
             nn.Conv2d(in_channels, mid_channels, kernel_size=3, padding=1, bias=False),
             nn.GroupNorm(1, mid_channels),
             nn.GELU(),
-            nn.Dropout(0.1),
             nn.Conv2d(mid_channels, out_channels, kernel_size=3, padding=1, bias=False),
             nn.GroupNorm(1, out_channels),
             nn.GELU()
@@ -236,15 +235,13 @@ class UNet2D(nn.Module):
 
 class UNet2DLatent(nn.Module):
     """
-    Simplified U-Net for latent space (16x16 inputs)
-    3 downsampling layers for 16x16 input (256->128->64->32->16)
-    Now with time conditioning injected at every block (FiLM style)
-    in_channels must be latent_dim
-    out_channels must be latent_dim
+    Final, optimized U-Net for latent space.
+    - Uses the standard 'Up' module with learnable ConvTranspose2d for upsampling.
+    - This version has the most expressive power for the given stable training environment.
     """
     def __init__(self, img_size, in_channels, out_channels):
-        print(f"[UNet2DLatent] Initializing with in_channels={in_channels}, out_channels={out_channels}")
         super().__init__()
+        print(f"[UNet2DLatent] Initializing with FINAL architecture.")
         time_dim = 128
         self.time_mlp = nn.Sequential(
             SinusoidalPositionEmbeddings(time_dim),
@@ -253,7 +250,7 @@ class UNet2DLatent(nn.Module):
             nn.Linear(time_dim * 4, time_dim),
         )
         self.channels = [64, 128, 256, 512, 1024]
-        # Time FiLM projections
+        # Time FiLM projections for all blocks
         self.time_proj_inc = nn.Linear(time_dim, self.channels[0] * 2)
         self.time_proj_down1 = nn.Linear(time_dim, self.channels[1] * 2)
         self.time_proj_down2 = nn.Linear(time_dim, self.channels[2] * 2)
@@ -262,105 +259,53 @@ class UNet2DLatent(nn.Module):
         self.time_proj_up1 = nn.Linear(time_dim, self.channels[3] * 2)
         self.time_proj_up2 = nn.Linear(time_dim, self.channels[2] * 2)
         self.time_proj_up3 = nn.Linear(time_dim, self.channels[1] * 2)
+        # Downsampling path
         self.inc = DoubleConv(in_channels, self.channels[0])
-        self.down1 = nn.Sequential(nn.MaxPool2d(2), DoubleConv(self.channels[0], self.channels[1]))
-        self.down2 = nn.Sequential(nn.MaxPool2d(2), DoubleConv(self.channels[1], self.channels[2]))
-        self.down3 = nn.Sequential(nn.MaxPool2d(2), DoubleConv(self.channels[2], self.channels[3]))
+        self.down1 = Down(self.channels[0], self.channels[1])
+        self.down2 = Down(self.channels[1], self.channels[2])
+        self.down3 = Down(self.channels[2], self.channels[3])
+        # Bottleneck
         self.bot1 = DoubleConv(self.channels[3], self.channels[4])
-        self.up1 = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True)
-        self.upconv1 = DoubleConv(self.channels[4] + self.channels[2], self.channels[3])
-        self.up2 = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True)
-        self.upconv2 = DoubleConv(self.channels[3] + self.channels[1], self.channels[2])
-        self.up3 = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True)
-        self.upconv3 = DoubleConv(self.channels[2] + self.channels[0], self.channels[1])
-        self.outc = nn.Conv2d(self.channels[1], out_channels, kernel_size=1)
-
+        # Upsampling path using the 'Up' module with ConvTranspose2d
+        self.up1 = Up(self.channels[4], self.channels[3])
+        self.up2 = Up(self.channels[3], self.channels[2])
+        self.up3 = Up(self.channels[2], self.channels[1])
+        self.up4 = Up(self.channels[1], self.channels[0])
+        self.outc = nn.Conv2d(self.channels[0], out_channels, kernel_size=1)
     def forward(self, x, t, control_residuals=None):
-        # If control_residuals is None, run as standard UNet (LDM training)
-        if control_residuals is None:
-            # Standard UNet2DLatent forward pass (no ControlNet residuals)
-            t_emb = self.time_mlp(t)
-            # Initial conv + FiLM
-            x1 = self.inc(x)
-            scale_t, shift_t = self.time_proj_inc(t_emb)[:, :, None, None].chunk(2, dim=1)
-            x1 = x1 * (scale_t + 1) + shift_t
-            # Down 1 + FiLM
-            x2 = self.down1(x1)
-            scale_t, shift_t = self.time_proj_down1(t_emb)[:, :, None, None].chunk(2, dim=1)
-            x2 = x2 * (scale_t + 1) + shift_t
-            # Down 2 + FiLM
-            x3 = self.down2(x2)
-            scale_t, shift_t = self.time_proj_down2(t_emb)[:, :, None, None].chunk(2, dim=1)
-            x3 = x3 * (scale_t + 1) + shift_t
-            # Down 3 + FiLM
-            x4 = self.down3(x3)
-            scale_t, shift_t = self.time_proj_down3(t_emb)[:, :, None, None].chunk(2, dim=1)
-            x4 = x4 * (scale_t + 1) + shift_t
-            # Bottleneck + FiLM
-            x4 = self.bot1(x4)
-            scale_t, shift_t = self.time_proj_bot1(t_emb)[:, :, None, None].chunk(2, dim=1)
-            x4 = x4 * (scale_t + 1) + shift_t
-            # Up 1 + FiLM
-            x = self.up1(x4)
-            x = torch.cat([x, x3], dim=1)
-            x = self.upconv1(x)
-            scale_t, shift_t = self.time_proj_up1(t_emb)[:, :, None, None].chunk(2, dim=1)
-            x = x * (scale_t + 1) + shift_t
-            # Up 2 + FiLM
-            x = self.up2(x)
-            x = torch.cat([x, x2], dim=1)
-            x = self.upconv2(x)
-            scale_t, shift_t = self.time_proj_up2(t_emb)[:, :, None, None].chunk(2, dim=1)
-            x = x * (scale_t + 1) + shift_t
-            # Up 3 + FiLM
-            x = self.up3(x)
-            x = torch.cat([x, x1], dim=1)
-            x = self.upconv3(x)
-            scale_t, shift_t = self.time_proj_up3(t_emb)[:, :, None, None].chunk(2, dim=1)
-            x = x * (scale_t + 1) + shift_t
-            return self.outc(x)
-        else:
-            # ControlNet: inject control_residuals at each block
-            t_emb = self.time_mlp(t)
-            # Initial conv + FiLM + control
-            x1 = self.inc(x) + control_residuals[0]
-            scale_t, shift_t = self.time_proj_inc(t_emb)[:, :, None, None].chunk(2, dim=1)
-            x1 = x1 * (scale_t + 1) + shift_t
-            # Down 1 + FiLM + control
-            x2 = self.down1(x1) + control_residuals[1]
-            scale_t, shift_t = self.time_proj_down1(t_emb)[:, :, None, None].chunk(2, dim=1)
-            x2 = x2 * (scale_t + 1) + shift_t
-            # Down 2 + FiLM + control
-            x3 = self.down2(x2) + control_residuals[2]
-            scale_t, shift_t = self.time_proj_down2(t_emb)[:, :, None, None].chunk(2, dim=1)
-            x3 = x3 * (scale_t + 1) + shift_t
-            # Down 3 + FiLM + control
-            x4 = self.down3(x3) + control_residuals[3]
-            scale_t, shift_t = self.time_proj_down3(t_emb)[:, :, None, None].chunk(2, dim=1)
-            x4 = x4 * (scale_t + 1) + shift_t
-            # Bottleneck + FiLM + control
-            x4 = self.bot1(x4) + control_residuals[4]
-            scale_t, shift_t = self.time_proj_bot1(t_emb)[:, :, None, None].chunk(2, dim=1)
-            x4 = x4 * (scale_t + 1) + shift_t
-            # Up 1 + FiLM
-            x = self.up1(x4)
-            x = torch.cat([x, x3], dim=1)
-            x = self.upconv1(x)
-            scale_t, shift_t = self.time_proj_up1(t_emb)[:, :, None, None].chunk(2, dim=1)
-            x = x * (scale_t + 1) + shift_t
-            # Up 2 + FiLM
-            x = self.up2(x)
-            x = torch.cat([x, x2], dim=1)
-            x = self.upconv2(x)
-            scale_t, shift_t = self.time_proj_up2(t_emb)[:, :, None, None].chunk(2, dim=1)
-            x = x * (scale_t + 1) + shift_t
-            # Up 3 + FiLM
-            x = self.up3(x)
-            x = torch.cat([x, x1], dim=1)
-            x = self.upconv3(x)
-            scale_t, shift_t = self.time_proj_up3(t_emb)[:, :, None, None].chunk(2, dim=1)
-            x = x * (scale_t + 1) + shift_t
-            return self.outc(x)
+        if control_residuals is not None:
+            raise NotImplementedError("ControlNet path needs to be adapted for this UNet version.")
+        t_emb = self.time_mlp(t)
+        # --- Downsampling with FiLM ---
+        x1 = self.inc(x)
+        scale, shift = self.time_proj_inc(F.relu(t_emb))[:, :, None, None].chunk(2, dim=1)
+        x1 = x1 * (scale + 1) + shift
+        x2 = self.down1(x1)
+        scale, shift = self.time_proj_down1(F.relu(t_emb))[:, :, None, None].chunk(2, dim=1)
+        x2 = x2 * (scale + 1) + shift
+        x3 = self.down2(x2)
+        scale, shift = self.time_proj_down2(F.relu(t_emb))[:, :, None, None].chunk(2, dim=1)
+        x3 = x3 * (scale + 1) + shift
+        x4 = self.down3(x3)
+        scale, shift = self.time_proj_down3(F.relu(t_emb))[:, :, None, None].chunk(2, dim=1)
+        x4 = x4 * (scale + 1) + shift
+        # --- Bottleneck with FiLM ---
+        x5 = self.bot1(x4)
+        scale, shift = self.time_proj_bot1(F.relu(t_emb))[:, :, None, None].chunk(2, dim=1)
+        x5 = x5 * (scale + 1) + shift
+        # --- Upsampling with FiLM ---
+        x = self.up1(x5, x4)
+        scale, shift = self.time_proj_up1(F.relu(t_emb))[:, :, None, None].chunk(2, dim=1)
+        x = x * (scale + 1) + shift
+        x = self.up2(x, x3)
+        scale, shift = self.time_proj_up2(F.relu(t_emb))[:, :, None, None].chunk(2, dim=1)
+        x = x * (scale + 1) + shift
+        x = self.up3(x, x2)
+        scale, shift = self.time_proj_up3(F.relu(t_emb))[:, :, None, None].chunk(2, dim=1)
+        x = x * (scale + 1) + shift
+        x = self.up4(x, x1)
+        out = self.outc(x)
+        return out
 
 
 def get_model(img_size=256, in_channels=1, out_channels=1, time_dim=None, pretrained_ckpt=None):

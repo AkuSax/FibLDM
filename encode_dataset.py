@@ -24,40 +24,59 @@ def main(args):
 
     # --- Load Original Dataset ---
     print("Loading original dataset...")
-    dataset = ContourDataset(label_file=args.csv_file, img_dir=args.img_dir, istransform=True)
+    dataset = ContourDataset(label_file=args.csv_file, img_dir=args.img_dir, istransform=False)
     
-    # --- Create Directories for Latent Data ---
+    # --- Create Directories ---
     latent_dir = os.path.join(args.output_dir, "latents")
     contour_dir = os.path.join(args.output_dir, "contours")
     os.makedirs(latent_dir, exist_ok=True)
     os.makedirs(contour_dir, exist_ok=True)
 
-    print(f"Encoding dataset and saving to {args.output_dir}...")
+    # --- PASS 1: Encode and Save Un-normalized Latents ---
+    print("\n--- Pass 1: Encoding dataset and saving un-normalized latents... ---")
     with torch.no_grad():
-        manifest = []
         for i in tqdm(range(len(dataset))):
             image, contour = dataset[i]
             image = image.unsqueeze(0).to(device)
-            # Debug: Check image input to VAE encoder before encoding
-            print(f"Encoding Loop Item {i}: Image input to VAE - Shape: {image.shape}, Min: {image.min():.4f}, Max: {image.max():.4f}")
             mu, _ = vae.encode(image)
-            mu = mu * 0.18215
-            # Debug: Check VAE mu output shape
-            print(f"Encoding Loop Item {i}: VAE mu shape: {mu.shape}")
-            assert mu.shape[1] == args.latent_dim, f"VAE mu channels ({mu.shape[1]}) do not match latent_dim ({args.latent_dim})."
-            assert mu.shape[2] == 16 and mu.shape[3] == 16, f"VAE mu spatial size expected (16,16), got ({mu.shape[2]}, {mu.shape[3]})."
-            # Debug: Check latent properties before saving
-            print(f"Encoding Loop Item {i}: Latent (mu) - Shape: {mu.shape}, Min: {mu.min():.4f}, Max: {mu.max():.4f}")
-            assert mu.ndim == 4 and mu.shape[0] == 1, "Latent should have batch dim of 1."
+            # NO SCALING by 0.18215 anymore
             latent_path = os.path.join(latent_dir, f"{i}.pt")
             contour_path = os.path.join(contour_dir, f"{i}.pt")
             torch.save(mu.cpu(), latent_path)
             torch.save(contour.cpu(), contour_path)
+
+    # --- CALCULATE GLOBAL STATS ---
+    print("\n--- Calculating global mean and std of all latents... ---")
+    all_latents = []
+    for i in tqdm(range(len(dataset))):
+        latent_path = os.path.join(latent_dir, f"{i}.pt")
+        all_latents.append(torch.load(latent_path))
+    all_latents_tensor = torch.cat(all_latents, dim=0)
+    global_mean = all_latents_tensor.mean()
+    global_std = all_latents_tensor.std()
+    print(f"Global Mean: {global_mean.item():.6f}")
+    print(f"Global Std:  {global_std.item():.6f}")
+    # Save the stats for later use during inference
+    stats_path = os.path.join(args.output_dir, "latent_stats.pt")
+    torch.save({"mean": global_mean, "std": global_std}, stats_path)
+    print(f"Saved latent stats to {stats_path}")
+
+    # --- PASS 2: Normalize and Overwrite Latents ---
+    print("\n--- Pass 2: Normalizing latents with global stats and overwriting... ---")
+    manifest = []
+    with torch.no_grad():
+        for i in tqdm(range(len(dataset))):
+            latent_path = os.path.join(latent_dir, f"{i}.pt")
+            latent = torch.load(latent_path)
+            # Normalize the latent
+            normalized_latent = (latent - global_mean) / global_std
+            # Overwrite the file with the normalized latent
+            torch.save(normalized_latent.cpu(), latent_path)
             original_img_path = dataset.img_labels.iloc[i, 0]
             manifest.append({"index": i, "original_file": original_img_path})
     manifest_df = pd.DataFrame(manifest)
     manifest_df.to_csv(os.path.join(args.output_dir, "manifest.csv"), index=False)
-    print("Encoding complete. Manifest saved.")
+    print("\nNormalization complete. Manifest saved.")
 
     print("Debug image generation complete.")
 

@@ -12,6 +12,9 @@ import numpy as np
 from torchvision import transforms
 import torchvision.transforms.v2 as T
 import torch.nn.functional as F
+import warnings
+
+warnings.filterwarnings("ignore", category=FutureWarning)
 
 class NonUniformScaling: 
     """
