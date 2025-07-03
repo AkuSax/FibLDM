@@ -1,6 +1,6 @@
 python ../train_ldm_unet.py \
     --latent_data_dir ../data \
-    --save_dir ../model_runs/ldm_unet_run_1 \
+    --save_dir ../model_runs/ldm_unet_run_2 \
     --latent_dim 32 \
     --latent_size 16 \
     --epochs 100 \

@@ -84,18 +84,11 @@ class ControlNet(nn.Module):
         Returns:
             control_residuals: List of control residuals to inject into main UNet
         """
-        # Debug: ControlNet input shapes and properties
-        print(f"ControlNet.forward - Input x shape: {x.shape}, t shape: {t.shape}, conditioning_signal shape: {conditioning_signal.shape}")
+        # print(f"ControlNet.forward - Input x shape: {x.shape}, t shape: {t.shape}, conditioning_signal shape: {conditioning_signal.shape}")
         assert conditioning_signal.shape[1] == self.conditioning_channels, f"Conditioning signal channels ({conditioning_signal.shape[1]}) must match ControlNet's expected ({self.conditioning_channels})."
         
-        # Resize conditioning signal to match latent space dimensions
-        latent_size = x.shape[-1]  # Get the spatial size from latent tensor
-        conditioning_resized = F.interpolate(conditioning_signal, size=(latent_size, latent_size), mode='nearest')
-        # Debug: Check resized conditioning signal shape
-        print(f"ControlNet.forward - Resized conditioning_signal shape: {conditioning_resized.shape}")
-        assert conditioning_resized.shape[2] == latent_size and conditioning_resized.shape[3] == latent_size, \
-            f"Resized conditioning signal spatial size expected ({latent_size},{latent_size}), got ({conditioning_resized.shape[2]}, {conditioning_resized.shape[3]})."
-        
+        # Use the conditioning_signal directly (already resized in dataset)
+        conditioning_resized = conditioning_signal
         # Time embedding
         t_emb = self.time_mlp(t)
         
@@ -112,8 +105,7 @@ class ControlNet(nn.Module):
         scale_t, shift_t = self.time_proj_inc(t_emb)[:, :, None, None].chunk(2, dim=1)
         scale_c, shift_c = self.contour_proj_inc(c_emb)[:, :, None, None].chunk(2, dim=1)
         control_hidden = control_hidden * (scale_t + scale_c + 1) + (shift_t + shift_c)
-        # Debug: Check control_hidden shape before zero-conv
-        print(f"ControlNet.forward - control_hidden shape before zero_conv[{len(control_residuals)}]: {control_hidden.shape}")
+        # print(f"ControlNet.forward - control_hidden shape before zero_conv[{len(control_residuals)}]: {control_hidden.shape}")
         control_residuals.append(self.zero_convs[0](control_hidden))
         
         # Down 1 + FiLM
@@ -121,8 +113,7 @@ class ControlNet(nn.Module):
         scale_t, shift_t = self.time_proj_down1(t_emb)[:, :, None, None].chunk(2, dim=1)
         scale_c, shift_c = self.contour_proj_down1(c_emb)[:, :, None, None].chunk(2, dim=1)
         control_hidden = control_hidden * (scale_t + scale_c + 1) + (shift_t + shift_c)
-        # Debug: Check control_hidden shape before zero-conv
-        print(f"ControlNet.forward - control_hidden shape before zero_conv[{len(control_residuals)}]: {control_hidden.shape}")
+        # print(f"ControlNet.forward - control_hidden shape before zero_conv[{len(control_residuals)}]: {control_hidden.shape}")
         control_residuals.append(self.zero_convs[1](control_hidden))
         
         # Down 2 + FiLM
@@ -130,8 +121,7 @@ class ControlNet(nn.Module):
         scale_t, shift_t = self.time_proj_down2(t_emb)[:, :, None, None].chunk(2, dim=1)
         scale_c, shift_c = self.contour_proj_down2(c_emb)[:, :, None, None].chunk(2, dim=1)
         control_hidden = control_hidden * (scale_t + scale_c + 1) + (shift_t + shift_c)
-        # Debug: Check control_hidden shape before zero-conv
-        print(f"ControlNet.forward - control_hidden shape before zero_conv[{len(control_residuals)}]: {control_hidden.shape}")
+        # print(f"ControlNet.forward - control_hidden shape before zero_conv[{len(control_residuals)}]: {control_hidden.shape}")
         control_residuals.append(self.zero_convs[2](control_hidden))
         
         # Down 3 + FiLM
@@ -139,8 +129,7 @@ class ControlNet(nn.Module):
         scale_t, shift_t = self.time_proj_down3(t_emb)[:, :, None, None].chunk(2, dim=1)
         scale_c, shift_c = self.contour_proj_down3(c_emb)[:, :, None, None].chunk(2, dim=1)
         control_hidden = control_hidden * (scale_t + scale_c + 1) + (shift_t + shift_c)
-        # Debug: Check control_hidden shape before zero-conv
-        print(f"ControlNet.forward - control_hidden shape before zero_conv[{len(control_residuals)}]: {control_hidden.shape}")
+        # print(f"ControlNet.forward - control_hidden shape before zero_conv[{len(control_residuals)}]: {control_hidden.shape}")
         control_residuals.append(self.zero_convs[3](control_hidden))
         
         # Bottleneck + FiLM
@@ -148,8 +137,7 @@ class ControlNet(nn.Module):
         scale_t, shift_t = self.time_proj_bot1(t_emb)[:, :, None, None].chunk(2, dim=1)
         scale_c, shift_c = self.contour_proj_bot1(c_emb)[:, :, None, None].chunk(2, dim=1)
         control_hidden = control_hidden * (scale_t + scale_c + 1) + (shift_t + shift_c)
-        # Debug: Check control_hidden shape before zero-conv
-        print(f"ControlNet.forward - control_hidden shape before zero_conv[{len(control_residuals)}]: {control_hidden.shape}")
+        # print(f"ControlNet.forward - control_hidden shape before zero_conv[{len(control_residuals)}]: {control_hidden.shape}")
         control_residuals.append(self.zero_convs[4](control_hidden))
         
         return control_residuals

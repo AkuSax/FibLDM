@@ -41,6 +41,7 @@ def main(args):
             # Debug: Check image input to VAE encoder before encoding
             print(f"Encoding Loop Item {i}: Image input to VAE - Shape: {image.shape}, Min: {image.min():.4f}, Max: {image.max():.4f}")
             mu, _ = vae.encode(image)
+            mu = mu * 0.18215
             # Debug: Check VAE mu output shape
             print(f"Encoding Loop Item {i}: VAE mu shape: {mu.shape}")
             assert mu.shape[1] == args.latent_dim, f"VAE mu channels ({mu.shape[1]}) do not match latent_dim ({args.latent_dim})."

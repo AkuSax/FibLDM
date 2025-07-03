@@ -116,10 +116,11 @@ class ControlNetDataset(Dataset):
     Dataset for ControlNet training that loads CT images and their contour conditioning signals.
     This dataset is designed to work with the ControlNet architecture for precise contour control.
     """
-    def __init__(self, label_file, img_dir, img_size=256, istransform=True):
+    def __init__(self, label_file, img_dir, img_size=256, latent_size=16, istransform=True):
         self.img_labels = pd.read_csv(label_file)
         self.img_dir = img_dir
         self.img_size = img_size
+        self.latent_size = latent_size
         self.istransform = istransform
         
         # Augmentation pipeline for ControlNet training
@@ -158,6 +159,16 @@ class ControlNetDataset(Dataset):
             contour = readmat(c_path)
             contour = (contour > 0.2).float()
         
+        # --- DOWNSAMPLE CONTOUR TO LATENT SIZE BEFORE TRANSFORMS ---
+        if self.latent_size is not None:
+            contour = F.interpolate(
+                contour.unsqueeze(0),
+                size=(self.latent_size, self.latent_size),
+                mode='bilinear',
+                align_corners=False
+            ).squeeze(0)
+        # ----------------------------------------------------------
+
         # Apply synchronized transformations
         if self.istransform:
             rng_state = torch.random.get_rng_state()

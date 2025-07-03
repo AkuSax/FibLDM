@@ -13,6 +13,7 @@ class Diffusion:
         self.beta = self.prepare_noise_schedule().to(device) # beta from t=0 to t=T
         self.alpha = 1. - self.beta
         self.alpha_hat = torch.cumprod(self.alpha, dim=0)
+        self.is_latent = False
     
     def prepare_noise_schedule(self):
         if self.schedule_name == 'linear':
@@ -73,15 +74,17 @@ class Diffusion:
                 # Only show progress bar for non-fast sampling and when not too many chunks
                 show_progress = not fast_sampling and total_chunks <= 4
                 if show_progress:
-                    pbar = tqdm(
+                    tqdm_bar = tqdm(
                         reversed(step_indices),
                         desc=f"Denoising chunk {i//chunk_size + 1}/{total_chunks}",
                         leave=False
                     )
+                    iterator = tqdm_bar
                 else:
-                    pbar = reversed(step_indices)
+                    tqdm_bar = None
+                    iterator = reversed(step_indices)
                 
-                for t in pbar:
+                for t in iterator:
                     t_batch = torch.ones(end_idx - i).to(self.device) * t
                     
                     # For FiLM-based models, do not concatenate; always use x_in = x_chunk
@@ -111,8 +114,8 @@ class Diffusion:
                     x_chunk = 1 / torch.sqrt(alpha) * (x_chunk - ((1 - alpha) / (torch.sqrt(1 - alpha_hat))) * predicted_noise) + torch.sqrt(beta) * noise
                     
                     # Update progress bar with current noise level (only if showing progress)
-                    if show_progress and hasattr(pbar, 'set_postfix'):
-                        pbar.set_postfix({'noise_level': f'{t/self.noise_step:.2%}'})
+                    if tqdm_bar is not None:
+                        tqdm_bar.set_postfix({'noise_level': f'{t/self.noise_step:.2%}'})
                 
                 x[i:end_idx] = x_chunk
                 

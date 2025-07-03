@@ -125,7 +125,8 @@ def train_controlnet_proc(args):
         dataset = ControlNetDataset(
             label_file=os.path.join(args.data_path, args.csv_path),
             img_dir=args.data_path,
-            img_size=args.img_size
+            img_size=args.img_size,
+            latent_size=args.latent_size
         )
         
         train_size = int(0.9 * len(dataset))
@@ -199,7 +200,7 @@ def train_controlnet_proc(args):
                 # Encode images to latent space using frozen VAE
                 with torch.no_grad():
                     mu, _ = vae.encode(images)
-                    #mu = mu * 0.18215  # Scale the latents as required by LDM
+                    mu = mu * 0.18215  # Scale the latents as required by LDM
                 
                 # Sample timesteps
                 t = diffusion.sample_timesteps(images.shape[0])
@@ -250,7 +251,7 @@ def train_controlnet_proc(args):
                         conditioning_images = batch['conditioning_image'].to(device)
                         
                         mu, _ = vae.encode(images)
-                        mu = mu * 0.18215  # Scale the latents as required by LDM
+                        mu = mu * 0.18215
                         t = diffusion.sample_timesteps(images.shape[0])
                         noise = torch.randn_like(mu)
                         noisy_latents = diffusion.noise_image(mu, t)[0]

@@ -1,8 +1,13 @@
 __pycache__/
 model_runs/
 data/
+data32/
 controlnet_samples/
+ldm_samples/
 interpolation_samples/
+yk_models/
+vae_verification/
+*.png
 scripts/nohup.out
 logs/
 debug_samples/
