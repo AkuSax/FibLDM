@@ -75,9 +75,34 @@ class ContourDataset(Dataset):
     def __getitem__(self, idx):
         img_name = self.img_labels.iloc[idx, 0]
         c_name = self.img_labels.iloc[idx, 1]
-        img_path = os.path.join(self.img_dir, img_name)
-        c_path = os.path.join(self.img_dir, c_name)
-        volume = readmat(img_path)
+        # --- Robust image path resolution ---
+        img_path_candidates = [
+            os.path.join(self.img_dir, "images", img_name),
+            os.path.join(self.img_dir, img_name)
+        ]
+        img_path = next((p for p in img_path_candidates if os.path.exists(p)), None)
+        if img_path is None:
+            raise FileNotFoundError(f"Image file not found in any expected location: {img_path_candidates}")
+        # --- Robust contour path resolution ---
+        c_path_candidates = [
+            os.path.join(self.img_dir, "contours", c_name),
+            os.path.join(self.img_dir, c_name)
+        ]
+        c_path = next((p for p in c_path_candidates if os.path.exists(p)), None)
+        if c_path is None:
+            raise FileNotFoundError(f"Contour file not found in any expected location: {c_path_candidates}")
+        if img_path.lower().endswith('.png'):
+            # Load PNG image as tensor, ensure it's float and normalized to [-1, 1]
+            volume = read_image(img_path).float() / 255.0
+            if volume.ndim == 3 and volume.shape[0] == 1:
+                pass  # already (1, H, W)
+            elif volume.ndim == 3 and volume.shape[0] > 1:
+                volume = volume[0:1]  # take first channel if RGB
+            else:
+                volume = volume.unsqueeze(0)
+            volume = volume * 2.0 - 1.0  # scale to [-1, 1]
+        else:
+            volume = readmat(img_path)
         if c_path.lower().endswith('.png'):
             # Load PNG mask as tensor, ensure it's float and binarized
             contour = read_image(c_path).float() / 255.0
@@ -103,9 +128,6 @@ class ContourDataset(Dataset):
             volume = (volume - volume.min()) / (volume.max() - volume.min())
             volume = volume * 2.0 - 1.0
             volume = volume.float()
-        # Debug: Check properties of transformed volume and contour
-        print(f"ContourDataset Item {idx}: Volume Shape: {volume.shape}, Min: {volume.min():.4f}, Max: {volume.max():.4f}, Dtype: {volume.dtype}")
-        print(f"ContourDataset Item {idx}: Contour Shape: {contour.shape}, Min: {contour.min():.4f}, Max: {contour.max():.4f}, Dtype: {contour.dtype}")
         assert volume.shape[0] == 1, f"Volume channels must be 1, got {volume.shape[0]}"
         assert contour.shape[0] == 1, f"Contour channels must be 1, got {contour.shape[0]}"
         assert volume.min() >= -1.0 and volume.max() <= 1.0, "Volume should be in [-1, 1] range."
@@ -142,12 +164,34 @@ class ControlNetDataset(Dataset):
     def __getitem__(self, idx):
         img_name = self.img_labels.iloc[idx, 0]
         c_name = self.img_labels.iloc[idx, 1]
-        img_path = os.path.join(self.img_dir, img_name)
-        c_path = os.path.join(self.img_dir, c_name)
-        
+        # --- Robust image path resolution ---
+        img_path_candidates = [
+            os.path.join(self.img_dir, "images", img_name),
+            os.path.join(self.img_dir, img_name)
+        ]
+        img_path = next((p for p in img_path_candidates if os.path.exists(p)), None)
+        if img_path is None:
+            raise FileNotFoundError(f"Image file not found in any expected location: {img_path_candidates}")
+        # --- Robust contour path resolution ---
+        c_path_candidates = [
+            os.path.join(self.img_dir, "contours", c_name),
+            os.path.join(self.img_dir, c_name)
+        ]
+        c_path = next((p for p in c_path_candidates if os.path.exists(p)), None)
+        if c_path is None:
+            raise FileNotFoundError(f"Contour file not found in any expected location: {c_path_candidates}")
         # Load CT image
-        volume = readmat(img_path)
-        
+        if img_path.lower().endswith('.png'):
+            volume = read_image(img_path).float() / 255.0
+            if volume.ndim == 3 and volume.shape[0] == 1:
+                pass
+            elif volume.ndim == 3 and volume.shape[0] > 1:
+                volume = volume[0:1]
+            else:
+                volume = volume.unsqueeze(0)
+            volume = volume * 2.0 - 1.0
+        else:
+            volume = readmat(img_path)
         # Load contour conditioning signal
         if c_path.lower().endswith('.png'):
             contour = read_image(c_path).float() / 255.0
@@ -161,7 +205,6 @@ class ControlNetDataset(Dataset):
         else:
             contour = readmat(c_path)
             contour = (contour > 0.2).float()
-        
         # --- DOWNSAMPLE CONTOUR TO LATENT SIZE BEFORE TRANSFORMS ---
         if self.latent_size is not None:
             contour = F.interpolate(
@@ -171,7 +214,6 @@ class ControlNetDataset(Dataset):
                 align_corners=False
             ).squeeze(0)
         # ----------------------------------------------------------
-
         # Apply synchronized transformations
         if self.istransform:
             rng_state = torch.random.get_rng_state()
@@ -185,10 +227,8 @@ class ControlNetDataset(Dataset):
             volume = (volume - volume.min()) / (volume.max() - volume.min())
             volume = volume * 2.0 - 1.0
             volume = volume.float()
-        
         # Normalize contour to [-1, 1] consistently
         contour = contour * 2.0 - 1.0
-
         return {
             "image": volume,  # CT image for VAE encoding
             "conditioning_image": contour  # Contour for ControlNet conditioning

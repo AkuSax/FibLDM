@@ -5,6 +5,7 @@ data32/
 controlnet_samples/
 ldm_samples/
 interpolation_samples/
+processed_images/
 yk_models/
 vae_verification/
 *.png

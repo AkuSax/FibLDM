@@ -2,7 +2,7 @@ import torch
 from tqdm import tqdm
 
 class Diffusion:
-    def __init__(self, noise_step=1000, beta_start=1e-4, beta_end=0.02, img_size=256, device='cuda', schedule_name='linear'):
+    def __init__(self, noise_step=1000, beta_start=1e-4, beta_end=0.005, img_size=256, device='cuda', schedule_name='linear'):
         self.noise_step = noise_step
         self.beta_start = beta_start
         self.beta_end = beta_end

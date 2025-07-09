@@ -95,6 +95,16 @@ def main(args):
         total_mse = 0
         total_lpips = 0
         num_batches = 0
+        # --- Accumulators for debug stats ---
+        sum_latents_mean = 0
+        sum_latents_std = 0
+        sum_x_t_mean = 0
+        sum_x_t_std = 0
+        sum_noise_mean = 0
+        sum_noise_std = 0
+        sum_pred_noise_mean = 0
+        sum_pred_noise_std = 0
+        sum_total_norm = 0
         pbar = tqdm(train_loader, desc=f"Epoch {epoch+1}/{args.epochs} [TRAIN]")
         for batch_idx, (latents, _) in enumerate(pbar):
             latents = latents.to(device)
@@ -110,6 +120,13 @@ def main(args):
             loss_lpips = F.mse_loss(feat_pred, feat_target)
             loss = loss_mse + (args.lambda_lpips * loss_lpips)
             loss.backward()
+            # --- Gradient norm calculation (after backward, before step) ---
+            total_norm = 0.0
+            for p in model.parameters():
+                if p.grad is not None:
+                    param_norm = p.grad.data.norm(2)
+                    total_norm += param_norm.item() ** 2
+            total_norm = total_norm ** 0.5
             optimizer.step()
             total_train_loss += loss.item()
             total_mse += loss_mse.item()
@@ -120,12 +137,32 @@ def main(args):
                 'mse': f'{loss_mse.item():.4f}',
                 'lpips': f'{loss_lpips.item():.4f}'
             })
+            # --- Accumulate debug stats ---
+            sum_latents_mean += latents.mean().item()
+            sum_latents_std += latents.std().item()
+            sum_x_t_mean += x_t.mean().item()
+            sum_x_t_std += x_t.std().item()
+            sum_noise_mean += noise.mean().item()
+            sum_noise_std += noise.std().item()
+            sum_pred_noise_mean += pred_noise.mean().item()
+            sum_pred_noise_std += pred_noise.std().item()
+            sum_total_norm += total_norm
         avg_train_loss = total_train_loss / num_batches
         avg_mse = total_mse / num_batches
         avg_lpips = total_lpips / num_batches
         # --- Write metrics to CSV ---
         with open(metrics_csv, 'a') as f:
             f.write(f'{epoch+1},{avg_mse:.6f},{avg_lpips:.6f},{avg_train_loss:.6f}\n')
+
+        # --- Debug Stats Logging (mean across epoch) ---
+        if (epoch + 1) % args.save_interval == 0 or epoch == 0:
+            debug_logger.info(f"--- Debug Log at Epoch {epoch+1} ---")
+            debug_logger.info(f"Input Latents  | Mean: {sum_latents_mean/num_batches:.4f}, Std: {sum_latents_std/num_batches:.4f}")
+            debug_logger.info(f"Noisy Latents  | Mean: {sum_x_t_mean/num_batches:.4f}, Std: {sum_x_t_std/num_batches:.4f}")
+            debug_logger.info(f"Target Noise   | Mean: {sum_noise_mean/num_batches:.4f}, Std: {sum_noise_std/num_batches:.4f}")
+            debug_logger.info(f"Predicted Noise| Mean: {sum_pred_noise_mean/num_batches:.4f}, Std: {sum_pred_noise_std/num_batches:.4f}")
+            debug_logger.info(f"Gradient Norm  | Total Norm: {sum_total_norm/num_batches:.4f}")
+            debug_logger.info("-------------------------------------\n")
 
         # --- Validation Loop ---
         model.eval()

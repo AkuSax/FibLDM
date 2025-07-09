@@ -1,0 +1,26 @@
+name: fibldm
+channels:
+  - pytorch
+  - nvidia
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.9
+  - pip
+  - pytorch>=2.0.0
+  - torchvision>=0.15.0
+  - torchaudio
+  - pytorch-cuda=11.8 # Or choose the version compatible with your hardware
+  - torchmetrics>=1.0.0
+  - matplotlib>=3.7.0
+  - numpy>=1.24.0
+  - tqdm>=4.65.0
+  - pandas>=2.0.0
+  - scikit-image>=0.20.0
+  - lpips>=0.1.4
+  - timm>=0.9.0
+  - opencv>=4.8.0
+  - pillow>=10.0.0
+  - scipy>=1.10.0
+  - pip:
+    - mat73

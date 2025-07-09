@@ -47,17 +47,15 @@ class Up(nn.Module):
 
     def forward(self, x1, x2):
         x1 = self.up(x1)
-        # input is CHW
         diffY = x2.size()[2] - x1.size()[2]
         diffX = x2.size()[3] - x1.size()[3]
-
-        x1 = nn.functional.pad(x1, [diffX // 2, diffX - diffX // 2,
-                                  diffY // 2, diffY - diffY // 2])
+        x1 = F.pad(x1, [diffX // 2, diffX - diffX // 2,
+                        diffY // 2, diffY - diffY // 2])
         x = torch.cat([x2, x1], dim=1)
         return self.conv(x)
 
 class SelfAttention(nn.Module):
-    def __init__(self, channels, size=None):
+    def __init__(self, channels, size):
         super().__init__()
         self.channels = channels
         self.size = size
@@ -71,47 +69,14 @@ class SelfAttention(nn.Module):
         )
 
     def forward(self, x):
-        if self.size is None:
-            raise ValueError("SelfAttention: 'size' must be specified (got None)")
-        x = x.view(-1, self.channels, self.size * self.size).swapaxes(1, 2)
-        x_ln = self.ln(x)
-        attention_value, _ = self.mha(x_ln, x_ln, x_ln)
-        attention_value = attention_value + x
-        attention_value = self.ff_self(attention_value)
-        return attention_value.swapaxes(2, 1).view(-1, self.channels, self.size, self.size)
-
-class CBAM(nn.Module):
-    def __init__(self, in_channels, reduction=16, kernel_size=7):
-        super(CBAM, self).__init__()
-
-        # --- Channel Attention ---
-        self.channel_attention = nn.Sequential(
-            nn.AdaptiveAvgPool2d(1),  # Global Avg Pool
-            nn.Conv2d(in_channels, in_channels // reduction, 1),  # Squeeze
-            nn.ReLU(),
-            nn.Conv2d(in_channels // reduction, in_channels, 1),  # Excitation
-            nn.Sigmoid()
-        )
-
-        # --- Spatial Attention ---
-        self.spatial_attention = nn.Sequential(
-            nn.Conv2d(2, 1, kernel_size=kernel_size, padding=kernel_size // 2),
-            nn.Sigmoid()
-        )
-
-    def forward(self, x):
-        # Apply Channel Attention
-        ch_attn = self.channel_attention(x)  # Shape: [B, C, 1, 1]
-        x = x * ch_attn  # Apply channel-wise scaling
-
-        # Compute Spatial Attention
-        avg_out = torch.mean(x, dim=1, keepdim=True)  # Avg pool across channels
-        max_out, _ = torch.max(x, dim=1, keepdim=True)  # Max pool across channels
-        spatial_attn = self.spatial_attention(torch.cat([avg_out, max_out], dim=1))  # [B, 2, H, W]
-
-        # Apply Spatial Attention
-        return x * spatial_attn  # Element-wise multiplication
-    
+        b, c, h, w = x.shape
+        x_flat = x.view(b, c, h * w).swapaxes(1, 2)  # (b, hw, c)
+        x_ln = self.ln(x_flat)
+        attn, _ = self.mha(x_ln, x_ln, x_ln)
+        attn = attn + x_flat
+        attn = self.ff_self(attn)
+        attn = attn.swapaxes(2, 1).view(b, c, h, w)
+        return attn
 
 class SinusoidalPositionEmbeddings(nn.Module):
     def __init__(self, dim):
@@ -121,11 +86,82 @@ class SinusoidalPositionEmbeddings(nn.Module):
     def forward(self, time):
         device = time.device
         half_dim = self.dim // 2
-        embeddings = math.log(10000) / (half_dim - 1)
-        embeddings = torch.exp(torch.arange(half_dim, device=device) * -embeddings)
-        embeddings = time[:, None] * embeddings[None, :]
-        embeddings = torch.cat((embeddings.sin(), embeddings.cos()), dim=-1)
-        return embeddings
+        emb = math.log(10000) / (half_dim - 1)
+        emb = torch.exp(torch.arange(half_dim, device=device) * -emb)
+        emb = time[:, None] * emb[None, :]
+        emb = torch.cat((emb.sin(), emb.cos()), dim=-1)
+        return emb
+
+class UNet2DLatent(nn.Module):
+    """
+    UNet with Self-Attention for latent diffusion.
+    """
+    def __init__(self, img_size, in_channels, out_channels, time_dim=256):
+        super().__init__()
+        self.img_size = img_size
+        self.time_dim = time_dim
+        self.time_mlp = nn.Sequential(
+            SinusoidalPositionEmbeddings(time_dim),
+            nn.Linear(time_dim, time_dim * 4), nn.GELU(),
+            nn.Linear(time_dim * 4, time_dim)
+        )
+
+        # Downsampling
+        self.inc = DoubleConv(in_channels, 64)
+        self.down1 = Down(64, 128)
+        self.attn1 = SelfAttention(128, img_size // 2)
+        self.down2 = Down(128, 256)
+        self.attn2 = SelfAttention(256, img_size // 4)
+        
+        # Bottleneck
+        self.bot1 = DoubleConv(256, 512)
+        self.attn_bot = SelfAttention(512, img_size // 4)
+        self.bot2 = DoubleConv(512, 512)
+        
+        # Upsampling
+        self.up1 = Up(512, 256) # Takes 512 from bot. Upsamples to 256. Concats with 256 from x3. Total input to DoubleConv is 512. Output is 256.
+        self.attn3 = SelfAttention(256, img_size // 2)
+        self.up2 = Up(256, 128) # Takes 256 from up1. Upsamples to 128. Concats with 128 from x2. Total input to DoubleConv is 256. Output is 128.
+        self.attn4 = SelfAttention(128, img_size)
+        self.outc = OutConv(128, out_channels)
+
+        # Time injection layers (additive)
+        self.time_proj_inc = nn.Linear(time_dim, 64)
+        self.time_proj_down1 = nn.Linear(time_dim, 128)
+        self.time_proj_down2 = nn.Linear(time_dim, 256)
+        self.time_proj_bot = nn.Linear(time_dim, 512)
+        self.time_proj_up1 = nn.Linear(time_dim, 256)
+        self.time_proj_up2 = nn.Linear(time_dim, 128)
+
+    def forward(self, x, t):
+        t_emb = self.time_mlp(t)
+
+        x1 = self.inc(x)
+        x1 = x1 + self.time_proj_inc(t_emb)[:, :, None, None]
+
+        x2 = self.down1(x1)
+        x2 = x2 + self.time_proj_down1(t_emb)[:, :, None, None]
+        x2 = self.attn1(x2)
+        
+        x3 = self.down2(x2)
+        x3 = x3 + self.time_proj_down2(t_emb)[:, :, None, None]
+        x3 = self.attn2(x3)
+
+        x_bot = self.bot1(x3)
+        x_bot = self.attn_bot(x_bot)
+        x_bot = self.bot2(x_bot)
+        x_bot = x_bot + self.time_proj_bot(t_emb)[:, :, None, None]
+
+        x = self.up1(x_bot, x3)
+        x = x + self.time_proj_up1(t_emb)[:, :, None, None]
+        x = self.attn3(x)
+
+        x = self.up2(x, x2)
+        x = x + self.time_proj_up2(t_emb)[:, :, None, None]
+        x = self.attn4(x)
+        
+        return self.outc(x)
+
 
 class UNet2D(nn.Module):
     def __init__(self, img_size=256, in_channels=1, out_channels=1, 
@@ -166,9 +202,9 @@ class UNet2D(nn.Module):
         self.down4 = Down(channels[3], channels[4])
         
         # Attention layers
-        self.attn1 = SelfAttention(channels[2], size=img_size//4)
-        self.attn2 = SelfAttention(channels[3], size=img_size//8)
-        self.attn3 = SelfAttention(channels[4], size=img_size//16)
+        self.attn1 = SelfAttention(channels[2], img_size//4)
+        self.attn2 = SelfAttention(channels[3], img_size//8)
+        self.attn3 = SelfAttention(channels[4], img_size//16)
         
         # Upsampling
         self.up1 = Up(channels[4], channels[3])
@@ -231,81 +267,6 @@ class UNet2D(nn.Module):
         
         # Output convolution
         return self.outc(x)
-
-
-class UNet2DLatent(nn.Module):
-    """
-    Final, optimized U-Net for latent space.
-    - Uses the standard 'Up' module with learnable ConvTranspose2d for upsampling.
-    - This version has the most expressive power for the given stable training environment.
-    """
-    def __init__(self, img_size, in_channels, out_channels):
-        super().__init__()
-        print(f"[UNet2DLatent] Initializing with FINAL architecture.")
-        time_dim = 128
-        self.time_mlp = nn.Sequential(
-            SinusoidalPositionEmbeddings(time_dim),
-            nn.Linear(time_dim, time_dim * 4),
-            nn.GELU(),
-            nn.Linear(time_dim * 4, time_dim),
-        )
-        self.channels = [64, 128, 256, 512, 1024]
-        # Time FiLM projections for all blocks
-        self.time_proj_inc = nn.Linear(time_dim, self.channels[0] * 2)
-        self.time_proj_down1 = nn.Linear(time_dim, self.channels[1] * 2)
-        self.time_proj_down2 = nn.Linear(time_dim, self.channels[2] * 2)
-        self.time_proj_down3 = nn.Linear(time_dim, self.channels[3] * 2)
-        self.time_proj_bot1 = nn.Linear(time_dim, self.channels[4] * 2)
-        self.time_proj_up1 = nn.Linear(time_dim, self.channels[3] * 2)
-        self.time_proj_up2 = nn.Linear(time_dim, self.channels[2] * 2)
-        self.time_proj_up3 = nn.Linear(time_dim, self.channels[1] * 2)
-        # Downsampling path
-        self.inc = DoubleConv(in_channels, self.channels[0])
-        self.down1 = Down(self.channels[0], self.channels[1])
-        self.down2 = Down(self.channels[1], self.channels[2])
-        self.down3 = Down(self.channels[2], self.channels[3])
-        # Bottleneck
-        self.bot1 = DoubleConv(self.channels[3], self.channels[4])
-        # Upsampling path using the 'Up' module with ConvTranspose2d
-        self.up1 = Up(self.channels[4], self.channels[3])
-        self.up2 = Up(self.channels[3], self.channels[2])
-        self.up3 = Up(self.channels[2], self.channels[1])
-        self.up4 = Up(self.channels[1], self.channels[0])
-        self.outc = nn.Conv2d(self.channels[0], out_channels, kernel_size=1)
-    def forward(self, x, t, control_residuals=None):
-        if control_residuals is not None:
-            raise NotImplementedError("ControlNet path needs to be adapted for this UNet version.")
-        t_emb = self.time_mlp(t)
-        # --- Downsampling with FiLM ---
-        x1 = self.inc(x)
-        scale, shift = self.time_proj_inc(F.relu(t_emb))[:, :, None, None].chunk(2, dim=1)
-        x1 = x1 * (scale + 1) + shift
-        x2 = self.down1(x1)
-        scale, shift = self.time_proj_down1(F.relu(t_emb))[:, :, None, None].chunk(2, dim=1)
-        x2 = x2 * (scale + 1) + shift
-        x3 = self.down2(x2)
-        scale, shift = self.time_proj_down2(F.relu(t_emb))[:, :, None, None].chunk(2, dim=1)
-        x3 = x3 * (scale + 1) + shift
-        x4 = self.down3(x3)
-        scale, shift = self.time_proj_down3(F.relu(t_emb))[:, :, None, None].chunk(2, dim=1)
-        x4 = x4 * (scale + 1) + shift
-        # --- Bottleneck with FiLM ---
-        x5 = self.bot1(x4)
-        scale, shift = self.time_proj_bot1(F.relu(t_emb))[:, :, None, None].chunk(2, dim=1)
-        x5 = x5 * (scale + 1) + shift
-        # --- Upsampling with FiLM ---
-        x = self.up1(x5, x4)
-        scale, shift = self.time_proj_up1(F.relu(t_emb))[:, :, None, None].chunk(2, dim=1)
-        x = x * (scale + 1) + shift
-        x = self.up2(x, x3)
-        scale, shift = self.time_proj_up2(F.relu(t_emb))[:, :, None, None].chunk(2, dim=1)
-        x = x * (scale + 1) + shift
-        x = self.up3(x, x2)
-        scale, shift = self.time_proj_up3(F.relu(t_emb))[:, :, None, None].chunk(2, dim=1)
-        x = x * (scale + 1) + shift
-        x = self.up4(x, x1)
-        out = self.outc(x)
-        return out
 
 
 def get_model(img_size=256, in_channels=1, out_channels=1, time_dim=None, pretrained_ckpt=None):
