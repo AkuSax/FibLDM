@@ -12,14 +12,27 @@ import matplotlib.pyplot as plt
 
 from dataset import ContourDataset
 from autoencoder import VAE
+from diffusers import AutoencoderKL
 
 def main(args):
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
+    # --- Enforce latent_dim=4 for SD VAE ---
+    if args.use_sd_vae:
+        if args.latent_dim != 4:
+            print("[INFO] Overriding latent_dim to 4 for Stable Diffusion VAE.")
+        args.latent_dim = 4
+
     # --- Load Models ---
-    print("Loading trained VAE model...")
-    vae = VAE(in_channels=1, latent_dim=args.latent_dim).to(device)
-    vae.load_state_dict(torch.load(args.vae_checkpoint))
+    if args.use_sd_vae:
+        print("Using Stable Diffusion VAE from diffusers...")
+        model_id = "runwayml/stable-diffusion-v1-5"
+        vae = AutoencoderKL.from_pretrained(model_id, subfolder="vae").to(device)
+        # Do NOT load a custom checkpoint!
+    else:
+        print("Using custom VAE...")
+        vae = VAE(in_channels=1, latent_dim=args.latent_dim).to(device)
+        vae.load_state_dict(torch.load(args.vae_checkpoint))
     vae.eval()
 
     # --- Load Original Dataset ---
@@ -38,7 +51,14 @@ def main(args):
         for i in tqdm(range(len(dataset))):
             image, contour = dataset[i]
             image = image.unsqueeze(0).to(device)
-            mu, _ = vae.encode(image)
+            # If using SD VAE, convert grayscale to 3 channels
+            if args.use_sd_vae and image.shape[1] == 1:
+                image = image.repeat(1, 3, 1, 1)
+            if args.use_sd_vae:
+                latent_dist = vae.encode(image).latent_dist
+                mu = latent_dist.mean
+            else:
+                mu, _ = vae.encode(image)
             # NO SCALING by 0.18215 anymore
             latent_path = os.path.join(latent_dir, f"{i}.pt")
             contour_path = os.path.join(contour_dir, f"{i}.pt")
@@ -91,6 +111,7 @@ if __name__ == '__main__':
     
     # Model Hyperparameters
     parser.add_argument("--latent_dim", type=int, default=8, help="Dimension of the VAE latent space. Must match the trained VAE.")
+    parser.add_argument("--use_sd_vae", action="store_true", help="Use Stable Diffusion VAE from diffusers instead of custom VAE.")
     
     args = parser.parse_args()
     main(args) 

@@ -94,71 +94,62 @@ class SinusoidalPositionEmbeddings(nn.Module):
 
 class UNet2DLatent(nn.Module):
     """
-    UNet with Self-Attention for latent diffusion.
+    ✨ Corrected UNet with Self-Attention for a 16x16 latent space. ✨
+    This version is architecturally symmetric.
     """
     def __init__(self, img_size, in_channels, out_channels, time_dim=256):
         super().__init__()
         self.img_size = img_size
         self.time_dim = time_dim
+        
         self.time_mlp = nn.Sequential(
             SinusoidalPositionEmbeddings(time_dim),
             nn.Linear(time_dim, time_dim * 4), nn.GELU(),
             nn.Linear(time_dim * 4, time_dim)
         )
 
-        # Downsampling
-        self.inc = DoubleConv(in_channels, 64)
-        self.down1 = Down(64, 128)
-        self.attn1 = SelfAttention(128, img_size // 2)
-        self.down2 = Down(128, 256)
-        self.attn2 = SelfAttention(256, img_size // 4)
-        
+        # Downsampling: 16x16 -> 8x8
+        self.inc = DoubleConv(in_channels, 128)
+        self.down1 = Down(128, 256)
+        self.attn1 = SelfAttention(256, img_size // 2)
+
         # Bottleneck
         self.bot1 = DoubleConv(256, 512)
-        self.attn_bot = SelfAttention(512, img_size // 4)
-        self.bot2 = DoubleConv(512, 512)
-        
-        # Upsampling
-        self.up1 = Up(512, 256) # Takes 512 from bot. Upsamples to 256. Concats with 256 from x3. Total input to DoubleConv is 512. Output is 256.
-        self.attn3 = SelfAttention(256, img_size // 2)
-        self.up2 = Up(256, 128) # Takes 256 from up1. Upsamples to 128. Concats with 128 from x2. Total input to DoubleConv is 256. Output is 128.
-        self.attn4 = SelfAttention(128, img_size)
+        self.attn_bot = SelfAttention(512, img_size // 2)
+        self.bot2 = DoubleConv(512, 256)
+
+        # Upsampling: 8x8 -> 16x16
+        self.up1 = Up(256, 128)
+        self.attn2 = SelfAttention(128, img_size)
         self.outc = OutConv(128, out_channels)
 
         # Time injection layers (additive)
-        self.time_proj_inc = nn.Linear(time_dim, 64)
-        self.time_proj_down1 = nn.Linear(time_dim, 128)
-        self.time_proj_down2 = nn.Linear(time_dim, 256)
-        self.time_proj_bot = nn.Linear(time_dim, 512)
-        self.time_proj_up1 = nn.Linear(time_dim, 256)
-        self.time_proj_up2 = nn.Linear(time_dim, 128)
-
+        self.time_proj_inc = nn.Linear(time_dim, 128)
+        self.time_proj_down1 = nn.Linear(time_dim, 256)
+        self.time_proj_bot = nn.Linear(time_dim, 256)
+        self.time_proj_up1 = nn.Linear(time_dim, 128)
+        
     def forward(self, x, t):
         t_emb = self.time_mlp(t)
 
-        x1 = self.inc(x)
+        # Downsampling
+        x1 = self.inc(x) # 16x16, 128ch
         x1 = x1 + self.time_proj_inc(t_emb)[:, :, None, None]
 
-        x2 = self.down1(x1)
+        x2 = self.down1(x1) # 8x8, 256ch
         x2 = x2 + self.time_proj_down1(t_emb)[:, :, None, None]
         x2 = self.attn1(x2)
         
-        x3 = self.down2(x2)
-        x3 = x3 + self.time_proj_down2(t_emb)[:, :, None, None]
-        x3 = self.attn2(x3)
-
-        x_bot = self.bot1(x3)
+        # Bottleneck
+        x_bot = self.bot1(x2) # 8x8, 512ch
         x_bot = self.attn_bot(x_bot)
-        x_bot = self.bot2(x_bot)
+        x_bot = self.bot2(x_bot) # 8x8, 256ch
         x_bot = x_bot + self.time_proj_bot(t_emb)[:, :, None, None]
 
-        x = self.up1(x_bot, x3)
+        # Upsampling
+        x = self.up1(x_bot, x1) 
         x = x + self.time_proj_up1(t_emb)[:, :, None, None]
-        x = self.attn3(x)
-
-        x = self.up2(x, x2)
-        x = x + self.time_proj_up2(t_emb)[:, :, None, None]
-        x = self.attn4(x)
+        x = self.attn2(x)
         
         return self.outc(x)
 

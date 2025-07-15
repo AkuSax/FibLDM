@@ -23,4 +23,5 @@ notebooks/
 /scratch/
 .vscode/
 .idea/
+*.txt
 *.csv

@@ -28,6 +28,12 @@ def main(args):
     unet.eval()
     print(f"Loaded LDM UNet from {args.unet_checkpoint}")
 
+    # --- Load latent normalization stats ---
+    stats = torch.load(args.stats_path, map_location=device)
+    latent_mean = stats["mean"]
+    latent_std = stats["std"]
+    print(f"Loaded latent stats: Mean={latent_mean.item():.4f}, Std={latent_std.item():.4f}")
+
     # --- Setup Diffusion ---
     diffusion = Diffusion(
         noise_step=args.noise_steps,
@@ -46,9 +52,9 @@ def main(args):
         )
         print("Latents generated. Decoding with VAE...")
 
-        # Decode from latent space to image space
-        # NOTE: The scaling factor is crucial for decoding
-        generated_images = vae.decode(generated_latents / 0.18215)
+        # Un-normalize before decoding
+        unnormalized_latents = (generated_latents * latent_std) + latent_mean
+        generated_images = vae.decode(unnormalized_latents)
     
     # --- Save Results ---
     os.makedirs(args.output_dir, exist_ok=True)
@@ -69,6 +75,8 @@ if __name__ == '__main__':
     
     parser.add_argument("--latent_size", type=int, default=16)
     parser.add_argument("--latent_dim", type=int, default=32)
+    
+    parser.add_argument("--stats_path", type=str, required=True, help="Path to the latent_stats.pt file.")
     
     args = parser.parse_args()
     main(args)
