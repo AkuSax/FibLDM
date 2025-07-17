@@ -27,7 +27,8 @@ def main(args):
     os.makedirs(args.save_dir, exist_ok=True)
     
     # --- Data ---
-    full_dataset = ContourDataset(label_file=args.label_file, img_dir=args.data_dir, istransform=True)
+    image_size = 512 if args.use_sd_vae else 256
+    full_dataset = ContourDataset(label_file=args.label_file, img_dir=args.data_dir, istransform=True, image_size=image_size)
     train_size = int(0.9 * len(full_dataset))
     val_size = len(full_dataset) - train_size
     train_ds, val_ds = random_split(full_dataset, [train_size, val_size])
@@ -47,10 +48,11 @@ def main(args):
         print("Using custom VAE...")
         model = VAE(in_channels=1, latent_dim=args.latent_dim).to(device)
         model.train()  # Ensure model is in training mode
+    # Compile the model for speedup (PyTorch 2.0+)
+    model = torch.compile(model)
     optimizer = AdamW(model.parameters(), lr=args.lr)
     stopper = EarlyStopper(patience=10, mode='min')
     
-    # ✨ Initialize GradScaler for AMP ✨
     scaler = GradScaler()
 
     # --- Training Loop ---
@@ -75,8 +77,7 @@ def main(args):
                 images_in = images
 
             images_in = images_in.float()
-            if args.use_sd_vae:
-                images_in = F.interpolate(images_in, size=(512, 512), mode='bilinear', align_corners=False)
+            images_for_loss = F.interpolate(images, size=(256, 256), mode='bilinear', align_corners=False) if args.use_sd_vae else images
             with autocast():
                 if args.use_sd_vae:
                     encoder_out = model.encode(images_in)
@@ -92,7 +93,7 @@ def main(args):
                         recon_images = 0.2989 * recon_images[:, 0:1] + 0.5870 * recon_images[:, 1:2] + 0.1140 * recon_images[:, 2:3]
                 else:
                     recon_images, mu, logvar = model(images_in)
-                loss, recon_loss, kld_loss = vae_loss_function(recon_images, images, mu, logvar, args.kld_weight)
+                loss, recon_loss, kld_loss = vae_loss_function(recon_images, images_for_loss, mu, logvar, args.kld_weight)
             scaler.scale(loss).backward()
             scaler.step(optimizer)
             scaler.update()

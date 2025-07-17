@@ -51,22 +51,24 @@ class NonUniformScaling:
         return stretched_img_tensor
 
 class ContourDataset(Dataset):
-    def __init__(self, label_file, img_dir, istransform=True):
+    def __init__(self, label_file, img_dir, istransform=True, image_size=256):
         self.img_labels = pd.read_csv(label_file) # list file
         self.img_dir   = img_dir # data folder
         self.istransform = istransform
-        
+        self.image_size = image_size
         # A more standard and stable augmentation pipeline for medical images
-        self.transforms = transforms.Compose([
-            # Geometric augmentations
+        tfs = []
+        if self.image_size is not None:
+            tfs.append(transforms.Resize((self.image_size, self.image_size)))
+        tfs.extend([
             transforms.RandomHorizontalFlip(p=0.5),
             transforms.RandomAffine(
                 degrees=5,          # Reduced rotation
                 translate=(0.05, 0.05) # Reduced translation
             ),
-            # Intensity augmentation (clamping to prevent outliers)
             transforms.Lambda(lambda x: torch.clamp(x, -1.0, 1.0)),
         ])
+        self.transforms = transforms.Compose(tfs)
 
 
     def __len__(self): # total data number

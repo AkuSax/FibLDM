@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Directory where your processed PNGs are located
-DATA_DIR="../processed_images"
+DATA_DIR="../processed_images_512"
 
 # --- Train the VAE ---
 python ../train_autoencoder.py \
@@ -9,7 +9,7 @@ python ../train_autoencoder.py \
     --data_dir "$DATA_DIR" \
     --save_dir ../model_runs/sd_vae \
     --epochs 20 \
-    --batch_size 5 \
+    --batch_size 6 \
     --lr 1e-4 \
     --latent_dim 32 \
     --kld_weight 1e-5 \
