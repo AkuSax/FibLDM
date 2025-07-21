@@ -13,6 +13,7 @@ from torchvision import transforms
 import torchvision.transforms.v2 as T
 import torch.nn.functional as F
 import warnings
+from PIL import Image
 
 warnings.filterwarnings("ignore", category=FutureWarning)
 
@@ -273,4 +274,45 @@ class LatentDataset(Dataset):
             contour = F.interpolate(contour.unsqueeze(0), size=(self.latent_size, self.latent_size), mode='nearest')
             contour = contour.squeeze(0)
         return latent, contour
+    
+class ImageFileDataset(Dataset):
+    """A simple dataset to load images from a CSV file of filenames."""
+    def __init__(self, label_file, img_dir, istransform=True, image_size=256):
+        self.labels = pd.read_csv(label_file)
+        self.img_dir = img_dir
+        self.istransform = istransform
+        self.image_size = image_size
+        
+        # Expects a single 'image' column with filenames
+        if 'image' not in self.labels.columns:
+            raise ValueError("CSV file must have a column named 'image'")
+
+        if self.istransform:
+            self.transform = T.Compose([
+                T.Resize((self.image_size, self.image_size)),
+                T.Grayscale(num_output_channels=1),
+                T.ToTensor(),
+                T.Normalize([0.5], [0.5])
+            ])
+
+    def __len__(self):
+        return len(self.labels)
+
+    def __getitem__(self, idx):
+        img_name = self.labels.iloc[idx]['image']
+        img_path = os.path.join(self.img_dir, "images", img_name)
+        
+        if not os.path.exists(img_path):
+             # Fallback for paths that might already be relative
+            img_path_alt = os.path.join(self.img_dir, img_name)
+            if not os.path.exists(img_path_alt):
+                raise FileNotFoundError(f"Image not found at {img_path} or {img_path_alt}")
+            img_path = img_path_alt
+
+        image = Image.open(img_path).convert("RGB")
+        
+        if self.istransform:
+            image = self.transform(image)
+            
+        return image
     

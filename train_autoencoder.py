@@ -9,7 +9,7 @@ from tqdm import tqdm
 import time
 
 # Local imports
-from dataset import ContourDataset
+from dataset import ImageFileDataset # Use the new, simpler dataset
 from autoencoder import VAE
 from utils import EarlyStopper
 from torch.cuda.amp import GradScaler, autocast # ✨ Import AMP modules
@@ -28,7 +28,7 @@ def main(args):
     
     # --- Data ---
     image_size = 512 if args.use_sd_vae else 256
-    full_dataset = ContourDataset(label_file=args.label_file, img_dir=args.data_dir, istransform=True, image_size=image_size)
+    full_dataset = ImageFileDataset(label_file=args.label_file, img_dir=args.data_dir, istransform=True, image_size=image_size)
     train_size = int(0.9 * len(full_dataset))
     val_size = len(full_dataset) - train_size
     train_ds, val_ds = random_split(full_dataset, [train_size, val_size])
@@ -60,7 +60,7 @@ def main(args):
         model.train()
         total_train_loss = 0
         pbar = tqdm(train_loader, desc=f"Epoch {epoch+1}/{args.epochs} [TRAIN]")
-        for batch_idx, (images, _) in enumerate(pbar):
+        for batch_idx, images in enumerate(pbar): # Dataset now only returns images
             batch_start = time.time()
             images = images.to(device)
             data_time = time.time() - batch_start
@@ -115,7 +115,7 @@ def main(args):
         total_val_loss = 0
         pbar_val = tqdm(val_loader, desc=f"Epoch {epoch+1}/{args.epochs} [VAL]")
         with torch.no_grad():
-            for batch_idx, (images, _) in enumerate(val_loader):
+            for batch_idx, images in enumerate(val_loader): # Dataset now only returns images
                 images = images.to(device)
                 if args.use_sd_vae:
                     if images.shape[1] == 1:
@@ -153,7 +153,7 @@ def main(args):
             break
         if (epoch + 1) % args.save_interval == 0:
             with torch.no_grad():
-                val_images, _ = next(iter(val_loader))
+                val_images = next(iter(val_loader)) # Dataset now only returns images
                 val_images = val_images.to(device)
                 if args.use_sd_vae:
                     if val_images.shape[1] == 1:
