@@ -8,8 +8,8 @@ python ../train_autoencoder.py \
     --label_file "$DATA_DIR/clustered_subset.csv" \
     --data_dir "$DATA_DIR" \
     --save_dir ../model_runs/sd_vae \
-    --epochs 20 \
-    --batch_size 6 \
+    --epochs 100 \
+    --batch_size 5 \
     --lr 1e-4 \
     --latent_dim 32 \
     --kld_weight 1e-5 \

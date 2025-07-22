@@ -1,11 +1,11 @@
 #!/bin/bash
 
-VAE_CHECKPOINT="../model_runs/vae_run_6/vae_best.pth" 
+VAE_CHECKPOINT="../model_runs/sd_vae/vae_best.pth" 
 STATS_PATH="../data/latent_stats.pt"
 
 python ../train_ldm_unet.py \
     --latent_data_dir ../data_sd \
-    --save_dir ../model_runs/ldm_unet_run_17 \
+    --save_dir ../model_runs/sd_run_1 \
     --vae_checkpoint $VAE_CHECKPOINT \
     --stats_path ../data_sd/latent_stats.pt \
     --latent_dim 4 \

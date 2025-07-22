@@ -16,6 +16,9 @@ from torch.cuda.amp import GradScaler, autocast # ✨ Import AMP modules
 from diffusers import AutoencoderKL
 
 def vae_loss_function(recon_x, x, mu, logvar, kld_weight):
+    # Upsample recon_x if needed to match x
+    if recon_x.shape != x.shape:
+        recon_x = F.interpolate(recon_x, size=x.shape[2:], mode='bilinear', align_corners=False)
     recon_loss = F.mse_loss(recon_x, x, reduction='sum')
     kld_loss = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())
     loss = (recon_loss + kld_weight * kld_loss) / x.size(0)
@@ -123,22 +126,23 @@ def main(args):
                     else:
                         images_in = images
                     images_in = (images_in + 1.0) / 2.0
-                else:
-                    images_in = images
-                with autocast():
-                    if args.use_sd_vae:
-                        out = model(images_in)
-                        recon_images = out.sample
-                        mu = out.latent_dist.mean
-                        logvar = out.latent_dist.logvar
+                    with autocast():
+                        encoder_out = model.encode(images_in)
+                        z = encoder_out.latent_dist.sample()
+                        decoder_out = model.decode(z)
+                        recon_images = decoder_out.sample
+                        mu = encoder_out.latent_dist.mean
+                        logvar = encoder_out.latent_dist.logvar
                         recon_images = recon_images * 2.0 - 1.0
                         # --- Fix: Downsample and grayscale recon_images to match input ---
                         recon_images = F.interpolate(recon_images, size=(256, 256), mode='bilinear', align_corners=False)
                         if recon_images.shape[1] == 3:
                             recon_images = 0.2989 * recon_images[:, 0:1] + 0.5870 * recon_images[:, 1:2] + 0.1140 * recon_images[:, 2:3]
-                    else:
-                        recon_images, mu, logvar = model(images_in)
-                    loss, _, _ = vae_loss_function(recon_images, images, mu, logvar, args.kld_weight)
+                        loss, _, _ = vae_loss_function(recon_images, images, mu, logvar, args.kld_weight)
+                else:
+                    with autocast():
+                        recon_images, mu, logvar = model(images)
+                        loss, _, _ = vae_loss_function(recon_images, images, mu, logvar, args.kld_weight)
                 total_val_loss += loss.item()
                 pbar_val.set_postfix(loss=f"{loss.item():.4f}")
         avg_val_loss = total_val_loss / len(val_loader)
@@ -166,7 +170,16 @@ def main(args):
                     recon_val = recon_val * 2.0 - 1.0
                 else:
                     recon_val, _, _ = model(val_images)
-                comparison = torch.cat([val_images[:8], recon_val[:8]])
+                # Ensure both are 3-channel for visualization
+                if val_images.shape[1] == 1:
+                    val_images_vis = val_images.repeat(1, 3, 1, 1)
+                else:
+                    val_images_vis = val_images
+                if recon_val.shape[1] == 1:
+                    recon_val_vis = recon_val.repeat(1, 3, 1, 1)
+                else:
+                    recon_val_vis = recon_val
+                comparison = torch.cat([val_images_vis[:8], recon_val_vis[:8]])
                 save_image(comparison.cpu(), os.path.join(args.save_dir, f"recon_{epoch+1}.png"), nrow=8, normalize=True)
                 print(f"Saved reconstruction sample to {os.path.join(args.save_dir, f'recon_{epoch+1}.png')}")
 
