@@ -70,8 +70,8 @@ def main(args):
     train_size = int(0.9 * len(dataset))
     val_size = len(dataset) - train_size
     train_ds, val_ds = torch.utils.data.random_split(dataset, [train_size, val_size])
-    train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers, pin_memory=True)
-    val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers, pin_memory=True)
+    train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers, pin_memory=True, persistent_workers=True)
+    val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers, pin_memory=True, persistent_workers=True)
 
     print(f"Training on {len(train_ds)} latent samples, validating on {len(val_ds)} samples.")
 
@@ -82,6 +82,7 @@ def main(args):
         in_channels=args.latent_dim,
         out_channels=args.latent_dim
     ).to(device)
+    model = torch.compile(model)
     optimizer = AdamW(model.parameters(), lr=args.lr)
     stopper = EarlyStopper(patience=20, mode='min')
     scheduler = CosineAnnealingLR(optimizer, T_max=args.epochs, eta_min=1e-6)
@@ -156,38 +157,9 @@ def main(args):
                     feat_pred = latent_lpips(pred_noise)
                     feat_target = latent_lpips(noise)
                 loss_lpips = F.mse_loss(feat_pred, feat_target)
-                # --- ADD: Image-space LPIPS loss ---
-                if vae is not None:
-                    with torch.no_grad():
-                        # Un-normalize latents before decoding
-                        pred_latents_unnorm = (pred_noise * latent_std) + latent_mean
-                        target_latents_unnorm = (noise * latent_std) + latent_mean
-                        decoded_pred = vae.decode(pred_latents_unnorm)
-                        decoded_target = vae.decode(target_latents_unnorm)
-                        if hasattr(decoded_pred, "sample"):
-                            pred_imgs = decoded_pred.sample
-                            target_imgs = decoded_target.sample
-                        else:
-                            pred_imgs = decoded_pred
-                            target_imgs = decoded_target
-                    # Prepare for LPIPS: 3 channels, [-1, 1], clamp
-                    pred_imgs_lpips = prepare_for_lpips(pred_imgs)
-                    target_imgs_lpips = prepare_for_lpips(target_imgs)
-                    # Clamp more aggressively
-                    pred_imgs_lpips = torch.clamp(pred_imgs_lpips, -1+1e-6, 1-1e-6)
-                    target_imgs_lpips = torch.clamp(target_imgs_lpips, -1+1e-6, 1-1e-6)
-                    # Move tensors to LPIPS device if needed
-                    device_lpips = next(img_lpips.parameters()).device
-                    pred_imgs_lpips = pred_imgs_lpips.to(device_lpips)
-                    target_imgs_lpips = target_imgs_lpips.to(device_lpips)
-                    # Run LPIPS outside autocast (AMP)
-                    with torch.cuda.amp.autocast(enabled=False):
-                        loss_img_lpips = img_lpips(pred_imgs_lpips, target_imgs_lpips).mean()
-                else:
-                    loss_img_lpips = 0.0
-                # --- Updated loss calculation ---
-                loss = (args.lambda_mse * loss_mse) + (args.lambda_lpips * loss_lpips) + (args.lambda_img_lpips * loss_img_lpips)
+                loss = (args.lambda_mse * loss_mse) + (args.lambda_lpips * loss_lpips)
             scaler.scale(loss).backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             # --- Gradient norm calculation (after backward, before step) ---
             total_norm = 0.0
             for p in model.parameters():
@@ -232,7 +204,7 @@ def main(args):
             debug_logger.info(f"Noisy Latents  | Mean: {sum_x_t_mean/num_batches:.4f}, Std: {sum_x_t_std/num_batches:.4f}")
             debug_logger.info(f"Target Noise   | Mean: {sum_noise_mean/num_batches:.4f}, Std: {sum_noise_std/num_batches:.4f}")
             debug_logger.info(f"Predicted Noise| Mean: {sum_pred_noise_mean/num_batches:.4f}, Std: {sum_pred_noise_std/num_batches:.4f}")
-            debug_logger.info(f"Gradient Norm  | Total Norm: {sum_total_norm/num_batches:.4f}")
+            debug_logger.info(f"Gradient Norm  | Total Norm: {sum_total_norm/num_batches:.4f}") 
             debug_logger.info("-------------------------------------\n")
 
         # --- Validation Loop ---

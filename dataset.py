@@ -1,4 +1,5 @@
 import os
+import h5py
 import pandas as pd
 from torchvision.io import read_image
 import torch
@@ -241,38 +242,40 @@ class ControlNetDataset(Dataset):
 
 class LatentDataset(Dataset):
     """
-    A dataset that loads pre-computed latent representations and their
-    corresponding contour maps from individual files.
+    A dataset that loads pre-computed latent representations from an HDF5 file.
+    It prioritizes loading a '_subset.h5' file if it exists.
     """
     def __init__(self, data_dir, downsample_contour=False, latent_size=16):
-        self.latent_dir = os.path.join(data_dir, "latents")
-        self.contour_dir = os.path.join(data_dir, "contours")
-        self.manifest_path = os.path.join(data_dir, "manifest.csv")
-        
-        if not all(os.path.exists(p) for p in [self.latent_dir, self.contour_dir, self.manifest_path]):
-            raise FileNotFoundError(f"One or more required directories/files not found in {data_dir}. Please run the `encode_dataset.py` script first.")
+        # --- MODIFICATION: Look for the subset file first ---
+        h5_subset_path = os.path.join(data_dir, "latents_dataset_subset.h5")
+        h5_full_path = os.path.join(data_dir, "latents_dataset.h5")
+
+        if os.path.exists(h5_subset_path):
+            self.h5_path = h5_subset_path
+            print(f"--- Using SUBSET HDF5 dataset: {self.h5_path} ---")
+        elif os.path.exists(h5_full_path):
+            self.h5_path = h5_full_path
+            print(f"--- Using FULL HDF5 dataset: {self.h5_path} ---")
+        else:
+            raise FileNotFoundError(f"No HDF5 dataset found in {data_dir}. Please run a preprocessing script first.")
+        # --- END MODIFICATION ---
             
-        self.manifest = pd.read_csv(self.manifest_path)
-        self.num_files = len(self.manifest)
-        self.downsample_contour = downsample_contour
         self.latent_size = latent_size
+        self.downsample_contour = downsample_contour
+
+        with h5py.File(self.h5_path, 'r') as f:
+            self.num_files = len(f['latents'])
 
     def __len__(self):
         return self.num_files
 
     def __getitem__(self, idx):
-        latent_path = os.path.join(self.latent_dir, f"{idx}.pt")
-        contour_path = os.path.join(self.contour_dir, f"{idx}.pt")
-        
-        latent = torch.load(latent_path)
-        contour = torch.load(contour_path)
-        
-        assert latent.ndim == 3 and latent.shape[1] == self.latent_size and latent.shape[2] == self.latent_size, \
-            f"Expected latent shape (C, {self.latent_size}, {self.latent_size}), got {latent.shape}"
+        with h5py.File(self.h5_path, 'r') as f:
+            latent = torch.from_numpy(f['latents'][idx])
+            contour = torch.from_numpy(f['contours'][idx])
 
         if self.downsample_contour:
-            contour = F.interpolate(contour.unsqueeze(0), size=(self.latent_size, self.latent_size), mode='nearest')
-            contour = contour.squeeze(0)
+            contour = F.interpolate(contour.unsqueeze(0), size=(self.latent_size, self.latent_size), mode='nearest').squeeze(0)
             
         return latent, contour
     
