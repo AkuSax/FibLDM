@@ -84,8 +84,12 @@ def main(args):
     ).to(device)
     model = torch.compile(model)
     optimizer = AdamW(model.parameters(), lr=args.lr)
-    stopper = EarlyStopper(patience=20, mode='min')
-    scheduler = CosineAnnealingLR(optimizer, T_max=args.epochs, eta_min=1e-6)
+    stopper = EarlyStopper(patience=50, mode='min')
+    warmup_epochs = 10
+    main_scheduler = CosineAnnealingLR(optimizer, T_max=args.epochs - warmup_epochs, eta_min=1e-7)
+    scheduler = torch.optim.lr_scheduler.SequentialLR(
+        optimizer, schedulers=[torch.optim.lr_scheduler.LinearLR(optimizer, start_factor=1e-6, end_factor=1.0, total_iters=warmup_epochs), main_scheduler], milestones=[warmup_epochs]
+    )
     # --- EMA Initialization ---
     ema = EMA(model, decay=args.ema_decay)
 

@@ -18,6 +18,7 @@ notebooks/
 .env/
 *.pth
 *.pt
+*.log
 *.ckpt
 /hot/
 /scratch/
