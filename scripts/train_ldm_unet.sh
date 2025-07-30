@@ -4,7 +4,7 @@ VAE_CHECKPOINT="../model_runs/sd_vae/vae_best.pth"
 
 python ../train_ldm_unet.py \
     --latent_data_dir /hot/Yi-Kuan/Fibrosis/Akul/sd_data/ \
-    --save_dir ../model_runs/sd_run_6 \
+    --save_dir ../model_runs/sd_run_7 \
     --vae_checkpoint $VAE_CHECKPOINT \
     --stats_path /hot/Yi-Kuan/Fibrosis/Akul/sd_data/latent_stats.pt \
     --latent_dim 4 \

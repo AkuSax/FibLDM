@@ -184,7 +184,7 @@ class ControlNetDataset(Dataset):
         c_path = next((p for p in c_path_candidates if os.path.exists(p)), None)
         if c_path is None:
             raise FileNotFoundError(f"Contour file not found in any expected location: {c_path_candidates}")
-        # Load CT image
+        # Load CT ifge
         if img_path.lower().endswith('.png'):
             volume = read_image(img_path).float() / 255.0
             if volume.ndim == 3 and volume.shape[0] == 1:
@@ -245,7 +245,7 @@ class LatentDataset(Dataset):
     A dataset that loads pre-computed latent representations from an HDF5 file.
     It prioritizes loading a '_subset.h5' file if it exists.
     """
-    def __init__(self, data_dir, downsample_contour=False, latent_size=16):
+    def __init__(self, data_dir, downsample_contour=False, latent_size=16, max_rows=None):
         # --- MODIFICATION: Look for the subset file first ---
         h5_subset_path = os.path.join(data_dir, "latents_dataset_subset.h5")
         h5_full_path = os.path.join(data_dir, "latents_dataset.h5")
