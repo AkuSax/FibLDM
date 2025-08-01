@@ -9,12 +9,13 @@ vae_recon_samples/
 vae_verification/
 autoencoder.py
 controlnet.py
-inference_contorlnet.py
+inference_controlnet.py
 inference_ldm.py
 metrics.py
 train_autoencoder.py
 train_controlnet.py
 train_ldm_unet.py
+train_utils.py
 scripts/1
 scripts/analyze_latent_distribution.py
 scripts/inference_controlnet.sh
