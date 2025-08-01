@@ -1,90 +1,53 @@
-# FibLDM: Latent Diffusion Model for Fibrosis Synthesis
+# FibLDM: Fine-Tuning Stable Diffusion for 2D Lung CT Scan Generation
 
 ---
 
-**FibLDM** is a high-performance, two-stage generative model in PyTorch for synthesizing medically-plausible CT scans of lungs with fibrosis. It is a **Latent Diffusion Model (LDM)**, which operates by first learning a compressed latent representation of the data and then running the diffusion process in that much smaller, more efficient space.
+**FibLDM** is a project focused on generating high-quality, 2D transverse lung CT scans, particularly those exhibiting features of fibrosis. This repository is currently under active development.
 
-This approach significantly reduces computational requirements and training time compared to traditional pixel-space diffusion models.
+### Project Overview
+The primary goal of **FibLDM** is to create a robust generative model for medical imaging. We are leveraging a pre-trained **Stable Diffusion (v1.5)** model and adapting its U-Net component to our domain of medical imaging using **Low-Rank Adaptation (LoRA)**. This allows for efficient training on a custom dataset of latent representations of lung CT scans. The project utilizes modern deep learning libraries, including Hugging Face's `diffusers` and `peft`.
 
-### Core Architecture
-1.  **Stage 1: Autoencoder (VAE)**
-    -   A `Variational Autoencoder` is trained to compress high-resolution 256x256 images into a small `(8, 16, 16)` latent space.
-    -   The VAE's decoder is used at the very end of the pipeline to transform generated latents back into full-resolution images.
+### Current Status
+🚧 **This project is a work in progress.** 🚧
 
-2.  **Stage 2: Latent Diffusion Model**
-    -   A conditional U-Net is trained entirely in the latent space.
-    -   It learns to reverse a diffusion process, generating new latent vectors conditioned on a downsampled lung contour map.
-
-### Key Features
--   **Efficient Latent Space Operation:** Drastically faster training and lower memory usage.
--   **High-Fidelity Generation:** The power of diffusion models combined with the perceptual quality of a well-trained VAE.
--   **Stable Training:** Implements a cosine noise schedule and modern training optimizations.
--   **Performance-Optimized:** Full support for DistributedDataParallel (DDP) and Automatic Mixed Precision (AMP).
--   **Integrated Validation:** On-the-fly decoding of generated samples for visual debugging and calculating realism metrics (FID, KID, LPIPS, SSIM) against real images.
+The current phase involves:
+- Fine-tuning the model on a large, private dataset of lung CT latents.
+- Experimenting with class conditioning (e.g., "healthy" vs. "fibrosis") and slice index conditioning to improve image quality and control.
+- Integrating Weights & Biases (`wandb`) for experiment tracking and performance monitoring.
 
 ---
 
 ## Training Pipeline
 
-### Step 1: Train the Autoencoder
+The training process is managed via a shell script that controls all relevant hyperparameters.
 
-First, train the VAE on the full-resolution images. This script will save the best-performing model checkpoint based on validation loss.
+### Step 1: Set up the Environment
 
-```bash
-# From the project root, run the VAE training script.
-# Make sure to provide the correct paths to your data.
-./scripts/train_vae.sh
-```
-*This will create a `vae_run_1/` directory containing the `vae_best.pth` model checkpoint.*
-
-### Step 2: Encode the Dataset into Latents
-
-Once the VAE is trained, use it to encode the entire image dataset into latent vectors. This pre-computation step makes the main LDM training much faster.
+First, create the conda environment from the provided `environment.yml` file.
 
 ```bash
-# Run the encoding script, pointing it to your trained VAE.
-python encode_dataset.py \
-    --csv_file ./data/label.csv \
-    --img_dir ./data/ \
-    --vae_checkpoint ./vae_run_1/vae_best.pth \
-    --output_dir ./data/latents_dataset
+conda env create -f environment.yml
+conda activate fibldm
 ```
 
-### Step 3: Train the Base Latent Diffusion Model (LDM UNet)
+### Step 2: Configure the Training Run
+Modify the hyperparameters at the top of the train_lora_unet.sh script to define your experiment.
 
-Before training ControlNet, you must train a base UNet (LDM) in the latent space. This model learns to denoise the VAE latents and is required for ControlNet to function properly.
+```#!/bin/bash
 
-```bash
-# Example command (adjust arguments as needed):
-python train_ldm_unet.py \
-    --latent_data_dir ./data/latents_dataset \
-    --vae_checkpoint ./vae_run_1/vae_best.pth \
-    --save_dir ./model_runs/ldm_unet_run_1 \
-    --latent_dim 8 \
-    --latent_size 16
-```
-*This will create a `ldm_unet_run_1/` directory containing the `unet_best.pth` model checkpoint.*
+# -- Experiment Configuration --
+export DATA_DIR="/path/to/your/data"
+export OUTPUT_DIR="./results/my_new_run"
 
-### Step 4: Train ControlNet (Conditioned LDM)
-
-When training ControlNet, you **must** provide the checkpoint of the trained base UNet using the `--unet_checkpoint` argument. This ensures the main UNet is not randomly initialized and frozen, but is a strong, pre-trained denoiser.
-
-```bash
-python train_controlnet.py \
-    --data_path ./data \
-    --csv_path label.csv \
-    --vae_checkpoint ./vae_run_1/vae_best.pth \
-    --unet_checkpoint ./model_runs/ldm_unet_run_1/unet_best.pth \
-    --save_dir ./model_runs/controlnet_run_1 \
-    --latent_dim 8 \
-    --latent_size 16 \
-    --contour_channels 1
+# -- Hyperparameters --
+LORA_RANK=32
+LEARNING_RATE=5e-5
+NUM_EPOCHS=150
+# ... and so on
 ```
 
-### Latent Scaling Convention
-
-- **VAE Encoding:** The VAE mu output is scaled by `0.18215` before saving as a latent (i.e., `latent_mu = mu * 0.18215`).
-- **LDM/ControlNet Training:** Use the latents as loaded from disk; do **not** scale again.
-- **Inference:** After sampling a latent from the diffusion model, scale **up** by `1/0.18215` before decoding with the VAE.
-
-This ensures consistent latent magnitudes throughout the pipeline and prevents noisy generations due to scaling mismatches.
+### Step 3: Start the Training
+Execute the script to begin the fine-tuning process. The script supports multi-GPU training and will automatically log metrics and sample images to Weights & Biases if configured.
+```
+./scripts/train_lora_unet.sh
+```
