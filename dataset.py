@@ -246,10 +246,9 @@ class LatentDataset(Dataset):
     It prioritizes loading a '_subset.h5' file if it exists.
     """
     def __init__(self, data_dir, downsample_contour=False, latent_size=16, max_rows=None):
-        # --- MODIFICATION: Look for the subset file first ---
         h5_subset_path = os.path.join(data_dir, "latents_dataset_subset.h5")
         h5_full_path = os.path.join(data_dir, "latents_dataset.h5")
-
+        
         if os.path.exists(h5_subset_path):
             self.h5_path = h5_subset_path
             print(f"--- Using SUBSET HDF5 dataset: {self.h5_path} ---")
@@ -266,6 +265,18 @@ class LatentDataset(Dataset):
         with h5py.File(self.h5_path, 'r') as f:
             self.num_files = len(f['latents'])
 
+        # Load latent stats for normalization
+        stats_path = '/hot/Yi-Kuan/Fibrosis/Akul/sd_data/latent_stats.pt'
+        if os.path.exists(stats_path):
+            stats = torch.load(stats_path)
+            self.latent_mean = torch.tensor(stats["mean"])
+            self.latent_std = torch.tensor(stats["std"])
+            print(f"Loaded latent stats: Mean={self.latent_mean}, Std={self.latent_std}")
+        else:
+            self.latent_mean = 0.0
+            self.latent_std = 1.0
+            print("Warning: latent_stats.pt not found, using mean=0, std=1.")
+
     def __len__(self):
         return self.num_files
 
@@ -273,6 +284,9 @@ class LatentDataset(Dataset):
         with h5py.File(self.h5_path, 'r') as f:
             latent = torch.from_numpy(f['latents'][idx])
             contour = torch.from_numpy(f['contours'][idx])
+
+        # Normalize latent to standard normal
+        latent = (latent - self.latent_mean) / self.latent_std    
 
         if self.downsample_contour:
             contour = F.interpolate(contour.unsqueeze(0), size=(self.latent_size, self.latent_size), mode='nearest').squeeze(0)

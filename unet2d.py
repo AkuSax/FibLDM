@@ -1,12 +1,56 @@
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import math
 
+class TimeEmbedding(nn.Module):
+    def __init__(self, time_dim, embed_dim):
+        super().__init__()
+        self.mlp = nn.Sequential(
+            nn.Linear(time_dim, embed_dim, bias=True),
+            nn.SiLU(), # SiLU (or GELU) is standard
+            nn.Linear(embed_dim, embed_dim, bias=True),
+        )
+
+    def forward(self, t):
+        return self.mlp(t)
+
+class ResnetBlock(nn.Module):
+    def __init__(self, in_channels, out_channels, time_emb_dim, groups=32):
+        super().__init__()
+        self.norm1 = nn.GroupNorm(groups, in_channels)
+        self.act1 = nn.SiLU()
+        self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1)
+
+        self.norm2 = nn.GroupNorm(groups, out_channels)
+        self.act2 = nn.SiLU()
+        self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1)
+
+        # Make sure dimensions match for skip connection
+        self.res_conv = nn.Conv2d(in_channels, out_channels, 1) if in_channels != out_channels else nn.Identity()
+
+        # Time embedding projection
+        self.time_emb_proj = nn.Linear(time_emb_dim, out_channels)
+
+
+    def forward(self, x, t_emb):
+        h = self.act1(self.norm1(x))
+        h = self.conv1(h)
+
+        # Add time embedding
+        t_emb_proj = self.time_emb_proj(self.act2(t_emb))
+        h = h + t_emb_proj[:, :, None, None]
+
+        h = self.act2(self.norm2(h))
+        h = self.conv2(h)
+
+        return h + self.res_conv(x)
+
 class OutConv(nn.Module):
     def __init__(self, in_channels, out_channels):
         super().__init__()
-        self.conv = nn.Conv2d(in_channels, out_channels, kernel_size=1)
+        self.conv = nn.Conv2d(in_channels, out_channels, kernel_size=1, bias=True)
 
     def forward(self, x):
         return self.conv(x)
@@ -17,10 +61,10 @@ class DoubleConv(nn.Module):
         if not mid_channels:
             mid_channels = out_channels
         self.double_conv = nn.Sequential(
-            nn.Conv2d(in_channels, mid_channels, kernel_size=3, padding=1, bias=False),
+            nn.Conv2d(in_channels, mid_channels, kernel_size=3, padding=1, bias=True),
             nn.GroupNorm(1, mid_channels),
             nn.GELU(),
-            nn.Conv2d(mid_channels, out_channels, kernel_size=3, padding=1, bias=False),
+            nn.Conv2d(mid_channels, out_channels, kernel_size=3, padding=1, bias=True),
             nn.GroupNorm(1, out_channels),
             nn.GELU()
         )
@@ -42,33 +86,39 @@ class Down(nn.Module):
 class Up(nn.Module):
     def __init__(self, in_channels, out_channels):
         super().__init__()
-        self.up = nn.ConvTranspose2d(in_channels, in_channels // 2, kernel_size=2, stride=2)
-        self.conv = DoubleConv(in_channels, out_channels)
+        self.up = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True)
+        self.conv = DoubleConv(in_channels + in_channels // 2, out_channels)
 
     def forward(self, x1, x2):
         x1 = self.up(x1)
+        
         diffY = x2.size()[2] - x1.size()[2]
         diffX = x2.size()[3] - x1.size()[3]
         x1 = F.pad(x1, [diffX // 2, diffX - diffX // 2,
                         diffY // 2, diffY - diffY // 2])
+        
         x = torch.cat([x2, x1], dim=1)
         return self.conv(x)
 
 class SelfAttention(nn.Module):
-    def __init__(self, channels, size):
+    def __init__(self, channels, size, use_attention=True):
         super().__init__()
         self.channels = channels
         self.size = size
-        self.mha = nn.MultiheadAttention(channels, 4, batch_first=True)
-        self.ln = nn.LayerNorm([channels])
-        self.ff_self = nn.Sequential(
-            nn.LayerNorm([channels]),
-            nn.Linear(channels, channels),
-            nn.GELU(),
-            nn.Linear(channels, channels),
-        )
+        self.use_attention = use_attention
+        if self.use_attention:
+            self.mha = nn.MultiheadAttention(channels, 4, batch_first=True)
+            self.ln = nn.LayerNorm([channels])
+            self.ff_self = nn.Sequential(
+                nn.LayerNorm([channels]),
+                nn.Linear(channels, channels, bias=True),
+                nn.GELU(),
+                nn.Linear(channels, channels, bias=True),
+            )
 
     def forward(self, x):
+        if not getattr(self, 'use_attention', True):
+            return x
         b, c, h, w = x.shape
         x_flat = x.view(b, c, h * w).swapaxes(1, 2)  # (b, hw, c)
         x_ln = self.ln(x_flat)
@@ -92,175 +142,104 @@ class SinusoidalPositionEmbeddings(nn.Module):
         emb = torch.cat((emb.sin(), emb.cos()), dim=-1)
         return emb
 
+# In unet2d.py
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import math
+
+# --- Keep your existing helper classes: ---
+# ResnetBlock, TimeEmbedding, SinusoidalPositionEmbeddings, SelfAttention, etc.
+# ... (your other classes here) ...
+
+
 class UNet2DLatent(nn.Module):
     """
-    ✨ Corrected UNet with Self-Attention for a 16x16 latent space. ✨
-    This version is architecturally symmetric.
+    A standard, symmetric, and dimensionally correct U-Net for latent diffusion.
+    This version is designed for stability and correctness.
     """
-    def __init__(self, img_size, in_channels, out_channels, time_dim=256):
+    def __init__(self, img_size, in_channels, out_channels, time_dim=256, use_attention=True):
         super().__init__()
-        self.img_size = img_size
-        self.time_dim = time_dim
         
+        channels = [128, 256, 512, 1024]
+
+        # --- Time Embedding ---
+        self.time_embedding_dim = time_dim * 4
         self.time_mlp = nn.Sequential(
             SinusoidalPositionEmbeddings(time_dim),
-            nn.Linear(time_dim, time_dim * 4), nn.GELU(),
-            nn.Linear(time_dim * 4, time_dim)
-        )
-
-        # Downsampling: 16x16 -> 8x8
-        self.inc = DoubleConv(in_channels, 128)
-        self.down1 = Down(128, 256)
-        self.attn1 = SelfAttention(256, img_size // 2)
-
-        # Bottleneck
-        self.bot1 = DoubleConv(256, 512)
-        self.attn_bot = SelfAttention(512, img_size // 2)
-        self.bot2 = DoubleConv(512, 256)
-
-        # Upsampling: 8x8 -> 16x16
-        self.up1 = Up(256, 128)
-        self.attn2 = SelfAttention(128, img_size)
-        self.outc = OutConv(128, out_channels)
-
-        # Time injection layers (additive)
-        self.time_proj_inc = nn.Linear(time_dim, 128)
-        self.time_proj_down1 = nn.Linear(time_dim, 256)
-        self.time_proj_bot = nn.Linear(time_dim, 256)
-        self.time_proj_up1 = nn.Linear(time_dim, 128)
-        
-    def forward(self, x, t):
-        t_emb = self.time_mlp(t)
-
-        # Downsampling
-        x1 = self.inc(x) # 16x16, 128ch
-        x1 = x1 + self.time_proj_inc(t_emb)[:, :, None, None]
-
-        x2 = self.down1(x1) # 8x8, 256ch
-        x2 = x2 + self.time_proj_down1(t_emb)[:, :, None, None]
-        x2 = self.attn1(x2)
-        
-        # Bottleneck
-        x_bot = self.bot1(x2) # 8x8, 512ch
-        x_bot = self.attn_bot(x_bot)
-        x_bot = self.bot2(x_bot) # 8x8, 256ch
-        x_bot = x_bot + self.time_proj_bot(t_emb)[:, :, None, None]
-
-        # Upsampling
-        x = self.up1(x_bot, x1) 
-        x = x + self.time_proj_up1(t_emb)[:, :, None, None]
-        x = self.attn2(x)
-        
-        return self.outc(x)
-
-
-class UNet2D(nn.Module):
-    def __init__(self, img_size=256, in_channels=1, out_channels=1, 
-                 channels=[64, 128, 256, 512, 1024], pretrained_ckpt=None):
-        super().__init__()
-        self.img_size = img_size
-        self.in_channels = in_channels
-        self.out_channels = out_channels
-        self.channels = channels
-        
-        # Time embedding
-        self.time_mlp = nn.Sequential(
-            SinusoidalPositionEmbeddings(img_size),
-            nn.Linear(img_size, img_size * 4),
+            nn.Linear(time_dim, self.time_embedding_dim),
             nn.GELU(),
-            nn.Linear(img_size * 4, img_size),
+            nn.Linear(self.time_embedding_dim, self.time_embedding_dim),
         )
+
+        # --- Input Layer ---
+        self.inc = nn.Conv2d(in_channels, channels[0], kernel_size=3, padding=1)
+
+        # --- Downsampling Path ---
+        self.down1 = ResnetBlock(channels[0], channels[0], self.time_embedding_dim)
+        self.down2 = ResnetBlock(channels[0], channels[1], self.time_embedding_dim)
+        self.down3 = ResnetBlock(channels[1], channels[2], self.time_embedding_dim)
+        self.down4 = ResnetBlock(channels[2], channels[3], self.time_embedding_dim)
         
-        # Time embedding projection layers for each stage
-        time_dim = img_size
-        self.time_proj_down1 = nn.Linear(time_dim, channels[1] * 2)
-        self.time_proj_down2 = nn.Linear(time_dim, channels[2] * 2)
-        self.time_proj_down3 = nn.Linear(time_dim, channels[3] * 2)
-        self.time_proj_down4 = nn.Linear(time_dim, channels[4] * 2)
+        self.pool = nn.MaxPool2d(2)
+
+        # --- Bottleneck ---
+        self.bot1 = ResnetBlock(channels[3], channels[3], self.time_embedding_dim)
+        self.bot_attn = SelfAttention(channels[3], img_size // 8, use_attention=use_attention)
+        self.bot2 = ResnetBlock(channels[3], channels[3], self.time_embedding_dim)
+
+        # --- Upsampling Path ---
+        self.upconv4 = nn.ConvTranspose2d(channels[3], channels[2], kernel_size=2, stride=2)
+        self.up4 = ResnetBlock(channels[3], channels[2], self.time_embedding_dim) # 512 + 512 = 1024 in
+
+        self.upconv3 = nn.ConvTranspose2d(channels[2], channels[1], kernel_size=2, stride=2)
+        self.up3 = ResnetBlock(channels[2], channels[1], self.time_embedding_dim) # 256 + 256 = 512 in
         
-        self.time_proj_up1 = nn.Linear(time_dim, channels[3] * 2)
-        self.time_proj_up2 = nn.Linear(time_dim, channels[2] * 2)
-        self.time_proj_up3 = nn.Linear(time_dim, channels[1] * 2)
-        self.time_proj_up4 = nn.Linear(time_dim, channels[0] * 2)
+        self.upconv2 = nn.ConvTranspose2d(channels[1], channels[0], kernel_size=2, stride=2)
+        self.up2 = ResnetBlock(channels[1], channels[0], self.time_embedding_dim) # 128 + 128 = 256 in
         
-        # Initial convolution
-        self.inc = DoubleConv(in_channels, channels[0])
+        # --- Output Layer ---
+        self.outc = nn.Conv2d(channels[0], out_channels, kernel_size=1)
         
-        # Downsampling
-        self.down1 = Down(channels[0], channels[1])
-        self.down2 = Down(channels[1], channels[2])
-        self.down3 = Down(channels[2], channels[3])
-        self.down4 = Down(channels[3], channels[4])
-        
-        # Attention layers
-        self.attn1 = SelfAttention(channels[2], img_size//4)
-        self.attn2 = SelfAttention(channels[3], img_size//8)
-        self.attn3 = SelfAttention(channels[4], img_size//16)
-        
-        # Upsampling
-        self.up1 = Up(channels[4], channels[3])
-        self.up2 = Up(channels[3], channels[2])
-        self.up3 = Up(channels[2], channels[1])
-        self.up4 = Up(channels[1], channels[0])
-        
-        # Output convolution
-        self.outc = OutConv(channels[0], out_channels)
-        
-        # Load pretrained weights if provided
-        if pretrained_ckpt:
-            self.load_pretrained(pretrained_ckpt)
-            
     def forward(self, x, t):
-        # Time embedding
         t_emb = self.time_mlp(t)
-        
-        # Initial convolution
+
+        # --- Encoder ---
+        # x shape: (B, C, 32, 32)
         x1 = self.inc(x)
+        x1 = self.down1(x1, t_emb) # -> (B, 128, 32, 32)
         
-        # Downsampling with FiLM time injection
-        x2 = self.down1(x1)
-        scale, shift = self.time_proj_down1(F.relu(t_emb))[:, :, None, None].chunk(2, dim=1)
-        x2 = x2 * (scale + 1) + shift
+        p1 = self.pool(x1) # -> (B, 128, 16, 16)
+        x2 = self.down2(p1, t_emb) # -> (B, 256, 16, 16)
         
-        x3 = self.down2(x2)
-        scale, shift = self.time_proj_down2(F.relu(t_emb))[:, :, None, None].chunk(2, dim=1)
-        x3 = x3 * (scale + 1) + shift
-        
-        x4 = self.down3(x3)
-        scale, shift = self.time_proj_down3(F.relu(t_emb))[:, :, None, None].chunk(2, dim=1)
-        x4 = x4 * (scale + 1) + shift
-        
-        x5 = self.down4(x4)
-        scale, shift = self.time_proj_down4(F.relu(t_emb))[:, :, None, None].chunk(2, dim=1)
-        x5 = x5 * (scale + 1) + shift
-        
-        # Attention
-        x3 = self.attn1(x3)
-        x4 = self.attn2(x4)
-        x5 = self.attn3(x5)
-        
-        # Upsampling with FiLM time injection
-        x = self.up1(x5, x4)
-        scale, shift = self.time_proj_up1(F.relu(t_emb))[:, :, None, None].chunk(2, dim=1)
-        x = x * (scale + 1) + shift
-        
-        x = self.up2(x, x3)
-        scale, shift = self.time_proj_up2(F.relu(t_emb))[:, :, None, None].chunk(2, dim=1)
-        x = x * (scale + 1) + shift
-        
-        x = self.up3(x, x2)
-        scale, shift = self.time_proj_up3(F.relu(t_emb))[:, :, None, None].chunk(2, dim=1)
-        x = x * (scale + 1) + shift
-        
-        x = self.up4(x, x1)
-        scale, shift = self.time_proj_up4(F.relu(t_emb))[:, :, None, None].chunk(2, dim=1)
-        x = x * (scale + 1) + shift
-        
-        # Output convolution
-        return self.outc(x)
+        p2 = self.pool(x2) # -> (B, 256, 8, 8)
+        x3 = self.down3(p2, t_emb) # -> (B, 512, 8, 8)
 
+        p3 = self.pool(x3) # -> (B, 512, 4, 4)
+        x4 = self.down4(p3, t_emb) # -> (B, 1024, 4, 4)
+        
+        # --- Bottleneck ---
+        x_bot = self.bot1(x4, t_emb)
+        x_bot = self.bot_attn(x_bot)
+        x_bot = self.bot2(x_bot, t_emb) # -> (B, 1024, 4, 4)
 
-def get_model(img_size=256, in_channels=1, out_channels=1, time_dim=None, pretrained_ckpt=None):
+        # --- Decoder ---
+        up4 = self.upconv4(x_bot) # -> (B, 512, 8, 8)
+        up4 = torch.cat([up4, x3], dim=1) # Concat skip -> (B, 512+512=1024, 8, 8)
+        up4 = self.up4(up4, t_emb) # -> (B, 512, 8, 8)
+        
+        up3 = self.upconv3(up4) # -> (B, 256, 16, 16)
+        up3 = torch.cat([up3, x2], dim=1) # Concat skip -> (B, 256+256=512, 16, 16)
+        up3 = self.up3(up3, t_emb) # -> (B, 256, 16, 16)
+        
+        up2 = self.upconv2(up3) # -> (B, 128, 32, 32)
+        up2 = torch.cat([up2, x1], dim=1) # Concat skip -> (B, 128+128=256, 32, 32)
+        up2 = self.up2(up2, t_emb) # -> (B, 128, 32, 32)
+        
+        return self.outc(up2)
+
+def get_model(img_size=256, in_channels=1, out_channels=1, time_dim=None, pretrained_ckpt=None, use_attention=True):
     """
     Factory function to create the appropriate U-Net model based on input size.
     For latent space (8x8), use the simplified UNet2DLatent.
@@ -270,12 +249,14 @@ def get_model(img_size=256, in_channels=1, out_channels=1, time_dim=None, pretra
         return UNet2DLatent(
             img_size=img_size,
             in_channels=in_channels,
-            out_channels=out_channels
+            out_channels=out_channels,
+            use_attention=use_attention
         )
     else:  # Image space
         return UNet2D(
             img_size=img_size,
             in_channels=in_channels,
             out_channels=out_channels,
-            pretrained_ckpt=pretrained_ckpt
+            pretrained_ckpt=pretrained_ckpt,
+            use_attention=use_attention
         )

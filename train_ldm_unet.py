@@ -2,13 +2,14 @@ import os
 import argparse
 import torch
 from torch.utils.data import DataLoader
-from torch.cuda.amp import GradScaler, autocast
+from torch.cuda.amp import GradScaler, autocast 
 from torch.optim import AdamW
-from torchvision.utils import save_image
+from torchvision.utils import save_image, make_grid
 from tqdm import tqdm
 import torch.nn.functional as F
 import logging
 from torch.optim.lr_scheduler import CosineAnnealingLR
+from torch.utils.tensorboard import SummaryWriter
 import lpips
 from diffusers import AutoencoderKL
 
@@ -38,10 +39,17 @@ def check_tensor(t, name):
     if torch.isinf(t).any():
         print(f"Inf detected in {name}")
 
+def init_weights(m):
+    if isinstance(m, torch.nn.Conv2d) or isinstance(m, torch.nn.Linear):
+        torch.nn.init.kaiming_normal_(m.weight, a=0.0, mode='fan_in', nonlinearity='leaky_relu')
+        if m.bias is not None:
+            torch.nn.init.zeros_(m.bias)
+            
 def main(args):
     torch.autograd.set_detect_anomaly(True)
     device = "cuda" if torch.cuda.is_available() else "cpu"
     os.makedirs(args.save_dir, exist_ok=True)
+    writer = SummaryWriter(log_dir=os.path.join(args.save_dir, 'runs'))
 
     # --- Enforce latent_dim=4 for SD VAE ---
     if args.use_sd_vae and args.latent_dim != 4:
@@ -80,11 +88,16 @@ def main(args):
     model = UNet2DLatent(
         img_size=args.latent_size,
         in_channels=args.latent_dim,
-        out_channels=args.latent_dim
+        out_channels=args.latent_dim,
+        use_attention=True
     ).to(device)
+    model.apply(init_weights)
+    # Zero-convolution initialization
+    torch.nn.init.zeros_(model.outc_conv.weight)
+    torch.nn.init.zeros_(model.outc_conv.bias)
     model = torch.compile(model)
     optimizer = AdamW(model.parameters(), lr=args.lr)
-    stopper = EarlyStopper(patience=50, mode='min')
+    stopper = EarlyStopper(patience=25, mode='min')
     warmup_epochs = 10
     main_scheduler = CosineAnnealingLR(optimizer, T_max=args.epochs - warmup_epochs, eta_min=1e-7)
     scheduler = torch.optim.lr_scheduler.SequentialLR(
@@ -153,15 +166,14 @@ def main(args):
             t = diffusion.sample_timesteps(latents.size(0)).to(device)
             x_t, noise = diffusion.noise_image(latents, t)
             optimizer.zero_grad()
-            with autocast():
-                pred_noise = model(x_t, t)
-                # --- Combined MSE + latent LPIPS loss ---
-                loss_mse = F.mse_loss(pred_noise, noise)
-                with torch.no_grad():
-                    feat_pred = latent_lpips(pred_noise)
-                    feat_target = latent_lpips(noise)
-                loss_lpips = F.mse_loss(feat_pred, feat_target)
-                loss = (args.lambda_mse * loss_mse) + (args.lambda_lpips * loss_lpips)
+            #with autocast():
+            pred_noise = model(x_t, t)
+            loss_mse = F.mse_loss(pred_noise, noise)
+            with torch.no_grad():
+                feat_pred = latent_lpips(pred_noise)
+                feat_target = latent_lpips(noise)
+            loss_lpips = F.mse_loss(feat_pred, feat_target)
+            loss = (args.lambda_mse * loss_mse) + (args.lambda_lpips * loss_lpips)
             scaler.scale(loss).backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             # --- Gradient norm calculation (after backward, before step) ---
@@ -171,8 +183,21 @@ def main(args):
                     param_norm = p.grad.data.norm(2)
                     total_norm += param_norm.item() ** 2
             total_norm = total_norm ** 0.5
+            if torch.isnan(torch.tensor(total_norm)):
+                print(f"NaN detected in gradient norm at batch {batch_idx}")
+            if torch.isinf(torch.tensor(total_norm)):
+                print(f"Inf detected in gradient norm at batch {batch_idx}")
             scaler.step(optimizer)
             scaler.update()
+
+            # --- TensorBoard Logging ---
+            global_step = epoch * len(train_loader) + batch_idx
+            writer.add_scalar('Loss/train', loss.item(), global_step)
+            writer.add_scalar('Loss/train_mse', loss_mse.item(), global_step)
+            writer.add_scalar('Loss/train_lpips', loss_lpips.item(), global_step)
+            writer.add_scalar('Debug/gradient_norm', total_norm, global_step)
+            writer.add_scalar('Params/learning_rate', optimizer.param_groups[0]['lr'], global_step)
+
             # --- EMA update ---
             ema.update(model)
             total_train_loss += loss.item()
@@ -257,7 +282,13 @@ def main(args):
                     unnormalized_latents = (generated_latents * latent_std) + latent_mean
                     generated_images = vae.decode(unnormalized_latents)
                     if hasattr(generated_images, "sample"):
-                        generated_images = generated_images.sample
+                        generated_images = generated_images.sample 
+                    # Create the grid for logging
+                    img_grid = make_grid(generated_images, nrow=4, normalize=True)
+                    # Log the corrected 'img_grid' to TensorBoard
+                    writer.add_image('Generated Samples', img_grid, global_step=epoch)
+
+                # --- This block should be OUTSIDE the `with torch.no_grad()` context ---
                 # Restore model weights after sampling
                 ema.restore(model)
                 # Save the grid of generated images
