@@ -16,7 +16,8 @@ train_autoencoder.py
 train_controlnet.py
 train_ldm_unet.py
 train_utils.py
-scripts/1
+preprocess_data.py
+scripts/wandb
 scripts/analyze_latent_distribution.py
 scripts/inference_controlnet.sh
 scripts/test_vae_interpolation.py
@@ -24,5 +25,4 @@ scripts/test_vae_metrics.py
 scripts/test_vae_reconstruction.py
 scripts/train_controlnet.sh
 scripts/train_ldm_unet.sh
-scripts/train_vae.sh
 *.log

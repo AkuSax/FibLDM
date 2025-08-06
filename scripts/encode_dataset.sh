@@ -1,9 +1,11 @@
 #!/bin/bash
 
+export DATA_DIR="/hot/Yi-Kuan/Fibrosis/Akul/sd_data"
+export VAE_PATH="../model_runs/vae_run_2/best_model_hf"
+export OUTPUT_DIR=$DATA_DIR
+
 python ../encode_dataset.py \
-  --csv_file ../processed_images/label.csv \
-  --img_dir ../processed_images \
-  --vae_checkpoint ../model_runs/sd_vae/vae_best.pth \
-  --output_dir /hot/Yi-Kuan/Fibrosis/Akul/sd_data \
-  --latent_dim 4 \
-  --use_sd_vae 
+    --vae_model_path=$VAE_PATH \
+    --data_dir=$DATA_DIR \
+    --output_dir=$OUTPUT_DIR \
+    --batch_size=128

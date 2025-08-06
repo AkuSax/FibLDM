@@ -252,11 +252,11 @@ def get_model(img_size=256, in_channels=1, out_channels=1, time_dim=None, pretra
             out_channels=out_channels,
             use_attention=use_attention
         )
-    else:  # Image space
-        return UNet2D(
-            img_size=img_size,
-            in_channels=in_channels,
-            out_channels=out_channels,
-            pretrained_ckpt=pretrained_ckpt,
-            use_attention=use_attention
-        )
+    # else:  # Image space
+    #     return UNet2D(
+    #         img_size=img_size,
+    #         in_channels=in_channels,
+    #         out_channels=out_channels,
+    #         pretrained_ckpt=pretrained_ckpt,
+    #         use_attention=use_attention
+    #     )
