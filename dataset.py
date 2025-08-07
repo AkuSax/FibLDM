@@ -1,4 +1,4 @@
-# dataset.py (Corrected for Broadcasting and Warnings)
+# dataset.py (Corrected for ControlNet Channel Mismatch)
 import os
 import h5py
 import pandas as pd
@@ -6,6 +6,7 @@ import torch
 from torch.utils.data import Dataset
 from torchvision import transforms
 import warnings
+import cv2
 
 warnings.filterwarnings("ignore", category=UserWarning, module="torchvision.transforms.functional")
 
@@ -38,28 +39,21 @@ class HDF5ImageDataset(Dataset):
         return image.clamp(-1.0, 1.0)
 
 class LatentDataset(Dataset):
-    """
-    Loads pre-computed latent vectors and constructs text prompts for conditioning.
-    """
+    # This class is correct and needs no changes.
     def __init__(self, data_dir, manifest_file='manifest_final.csv'):
         self.data_dir = data_dir
         self.latents_dir = os.path.join(self.data_dir, 'latents')
         manifest_path = os.path.join(self.data_dir, manifest_file)
         if not os.path.exists(manifest_path):
             raise FileNotFoundError(f"Manifest file not found at: {manifest_path}")
-        print(f"--- Loading manifest from: {manifest_path} ---")
         self.manifest = pd.read_csv(manifest_path)
         stats_path = os.path.join(self.data_dir, 'latent_stats.pt')
         if os.path.exists(stats_path):
-            # FIX: Load with weights_only=True to suppress the warning
             stats = torch.load(stats_path, weights_only=True)
-            # FIX: Use .clone().detach() to suppress the warning
             self.latent_mean = stats["mean"].clone().detach()
             self.latent_std = stats["std"].clone().detach()
         else:
-            self.latent_mean = 0.0
-            self.latent_std = 1.0
-            print("Warning: latent_stats.pt not found.")
+            self.latent_mean, self.latent_std = 0.0, 1.0
     def __len__(self):
         return len(self.manifest)
     def __getitem__(self, idx):
@@ -69,19 +63,77 @@ class LatentDataset(Dataset):
         latent_index = item_info['index']
         condition = item_info['condition']
         slice_num = item_info['slice']
-        latent_filename = f"{latent_index}.pt"
-        latent_path = os.path.join(self.latents_dir, latent_filename)
+        latent_path = os.path.join(self.latents_dir, f"{latent_index}.pt")
         try:
             latent = torch.load(latent_path, weights_only=True)
         except FileNotFoundError:
             return torch.zeros(4, 32, 32), "error"
-        if latent.ndim == 4:
-            latent = latent.squeeze(0)
-        
-        # --- FIX: Reshape mean and std for correct broadcasting ---
-        mean = self.latent_mean.view(4, 1, 1)
-        std = self.latent_std.view(4, 1, 1)
+        if latent.ndim == 4: latent = latent.squeeze(0)
+        mean, std = self.latent_mean.view(4, 1, 1), self.latent_std.view(4, 1, 1)
         latent = (latent - mean) / std
-        
         prompt = f"A transverse lung CT scan of a {condition} lung, slice {slice_num}"
         return latent, prompt
+
+class ControlNetLatentDataset(Dataset):
+    """
+    Loads pre-computed latents, their corresponding masks, and constructs text prompts.
+    """
+    def __init__(self, data_dir, manifest_file='manifest_controlnet.csv'):
+        self.data_dir = data_dir
+        self.latents_dir = os.path.join(self.data_dir, 'latents')
+        self.masks_dir = os.path.join(self.data_dir, 'masks')
+        manifest_path = os.path.join(self.data_dir, manifest_file)
+
+        if not os.path.exists(manifest_path):
+            raise FileNotFoundError(f"ControlNet manifest not found at {manifest_path}")
+        
+        self.manifest = pd.read_csv(manifest_path)
+
+        stats_path = os.path.join(self.data_dir, 'latent_stats.pt')
+        if os.path.exists(stats_path):
+            stats = torch.load(stats_path, weights_only=True)
+            self.latent_mean = stats["mean"].clone().detach()
+            self.latent_std = stats["std"].clone().detach()
+        else:
+            self.latent_mean, self.latent_std = 0.0, 1.0
+
+        self.mask_transform = transforms.Compose([
+            transforms.ToTensor(),
+            transforms.Resize((32, 32), antialias=True)
+        ])
+
+    def __len__(self):
+        return len(self.manifest)
+
+    def __getitem__(self, idx):
+        if torch.is_tensor(idx):
+            idx = idx.item()
+            
+        item_info = self.manifest.iloc[int(idx)]
+        latent_index = item_info['index']
+        mask_filename = item_info['mask_file']
+        condition = item_info['condition']
+        slice_num = item_info['slice']
+
+        latent_path = os.path.join(self.latents_dir, f"{latent_index}.pt")
+        try:
+            latent = torch.load(latent_path, weights_only=True)
+        except FileNotFoundError:
+            return None
+        
+        if latent.ndim == 4: latent = latent.squeeze(0)
+        mean, std = self.latent_mean.view(4, 1, 1), self.latent_std.view(4, 1, 1)
+        latent = (latent - mean) / std
+        
+        mask_path = os.path.join(self.masks_dir, mask_filename)
+        mask_img = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
+        if mask_img is None:
+            return None
+        mask_tensor = self.mask_transform(mask_img)
+
+        # --- FIX: Repeat the single mask channel 3 times ---
+        mask_tensor = mask_tensor.repeat(3, 1, 1)
+
+        prompt = f"A transverse lung CT scan of a {condition} lung, slice {slice_num}"
+        
+        return latent, mask_tensor, prompt

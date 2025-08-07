@@ -1,10 +1,9 @@
-# train_lora_unet.py
 import os
 import argparse
 import torch
 import torch.nn.functional as F
 import pandas as pd
-from torch.utils.data import DataLoader, WeightedRandomSampler, random_split
+from torch.utils.data import DataLoader, random_split
 from diffusers import UNet2DConditionModel, DDPMScheduler, AutoencoderKL
 from transformers import CLIPTextModel, CLIPTokenizer
 from peft import LoraConfig, get_peft_model
@@ -15,7 +14,6 @@ from torchvision.utils import make_grid
 import wandb
 
 from dataset import LatentDataset
-from utils import EarlyStopper
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Fine-tune a U-Net with LoRA for CT scan generation.")
@@ -28,6 +26,8 @@ def parse_args():
     parser.add_argument("--train_batch_size", type=int, default=16, help="Training batch size per GPU.")
     parser.add_argument("--num_dataloader_workers", type=int, default=16, help="Number of workers for DataLoader.")
     parser.add_argument("--log_every_epochs", type=int, default=5, help="Generate and log sample images every N epochs.")
+    parser.add_argument("--log_every_steps", type=int, default=100, help="Log training loss every N steps to W&B.")
+    return parser.parse_args()
     return parser.parse_args()
 
 def main():
@@ -49,32 +49,27 @@ def main():
     if accelerator.is_main_process:
         unet.print_trainable_parameters()
 
-    full_dataset = LatentDataset(data_dir=args.data_dir, manifest_file='manifest_final.csv')
-    train_size = int(0.95 * len(full_dataset))
-    val_size = len(full_dataset) - train_size
-    train_dataset, val_dataset = random_split(full_dataset, [train_size, val_size])
-
-    if accelerator.is_main_process:
-        print("Calculating weights for class balancing...")
-    class_counts = train_dataset.dataset.manifest.iloc[train_dataset.indices]['condition'].value_counts()
-    class_weights = 1.0 / class_counts
-    sample_weights = train_dataset.dataset.manifest.iloc[train_dataset.indices]['condition'].map(class_weights).to_numpy()
-    sampler = WeightedRandomSampler(weights=sample_weights, num_samples=len(sample_weights), replacement=True)
+    full_dataset = LatentDataset(data_dir=args.data_dir, manifest_file='manifest_balanced.csv')
     
-    train_dataloader = DataLoader(train_dataset, sampler=sampler, batch_size=args.train_batch_size, num_workers=args.num_dataloader_workers, pin_memory=True)
-    val_dataloader = DataLoader(val_dataset, batch_size=args.train_batch_size, shuffle=False, num_workers=args.num_dataloader_workers)
+    train_dataloader = DataLoader(
+        full_dataset, 
+        shuffle=True, # Shuffle the data each epoch
+        batch_size=args.train_batch_size, 
+        num_workers=args.num_dataloader_workers, 
+        pin_memory=True
+    )
 
     optimizer = torch.optim.AdamW(unet.parameters(), lr=args.learning_rate)
     noise_scheduler = DDPMScheduler.from_pretrained(model_id, subfolder="scheduler")
 
-    unet, text_encoder, vae, optimizer, train_dataloader, val_dataloader = accelerator.prepare(
-        unet, text_encoder, vae, optimizer, train_dataloader, val_dataloader
+    unet, text_encoder, vae, optimizer, train_dataloader = accelerator.prepare(
+        unet, text_encoder, vae, optimizer, train_dataloader
     )
     
     vae.eval()
     text_encoder.eval()
 
-    accelerator.print("🚀 Starting LoRA fine-tuning...")
+    accelerator.print("🚀 Starting LoRA fine-tuning on balanced dataset...")
     for epoch in range(args.num_train_epochs):
         unet.train()
         progress_bar = tqdm(total=len(train_dataloader), disable=not accelerator.is_local_main_process, desc=f"Epoch {epoch+1}")
@@ -95,6 +90,15 @@ def main():
             loss = F.mse_loss(noise_pred.float(), noise.float(), reduction="mean")
             accelerator.backward(loss)
             optimizer.step()
+
+            if accelerator.is_main_process:
+                if global_step % args.log_every_steps == 0:
+                    accelerator.log(
+                        {"train_loss_step": loss.item()},
+                        step=global_step
+                    )
+            global_step += 1
+
             progress_bar.set_postfix(loss=loss.item())
             progress_bar.update(1)
         progress_bar.close()
@@ -102,26 +106,17 @@ def main():
 
         if accelerator.is_main_process and (epoch + 1) % args.log_every_epochs == 0:
             unet.eval()
-            # Generate a sample image for visualization
             with torch.no_grad():
-                # Example prompt for generation
                 prompt = "A transverse lung CT scan of a fibrosis lung, slice 150"
                 text_inputs = tokenizer(prompt, padding="max_length", max_length=tokenizer.model_max_length, truncation=True, return_tensors="pt")
                 text_input_ids = text_inputs.input_ids.to(accelerator.device)
                 encoder_hidden_states = text_encoder(text_input_ids)[0]
-                
-                # Generate random noise
-                latents = torch.randn(1, unet.module.config.in_channels, 32, 32, device=accelerator.device) # Assuming 32x32 latent
-                
-                # Denoise
+                latents = torch.randn(1, unet.module.config.in_channels, 32, 32, device=accelerator.device)
                 for t in tqdm(noise_scheduler.timesteps, desc="Sampling"):
                     noise_pred = unet(latents, t, encoder_hidden_states=encoder_hidden_states).sample
                     latents = noise_scheduler.step(noise_pred, t, latents).prev_sample
-                
-                # Decode
                 image = vae.module.decode(latents / vae.module.config.scaling_factor).sample
                 image = (image / 2 + 0.5).clamp(0, 1)
-                
                 accelerator.get_tracker("wandb").log({"sample_image": wandb.Image(image)})
             unet.train()
 
