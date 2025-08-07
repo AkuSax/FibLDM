@@ -71,7 +71,7 @@ class LatentDataset(Dataset):
         if latent.ndim == 4: latent = latent.squeeze(0)
         mean, std = self.latent_mean.view(4, 1, 1), self.latent_std.view(4, 1, 1)
         latent = (latent - mean) / std
-        prompt = f"A transverse lung CT scan of a {condition} lung, slice {slice_num}"
+        prompt = f"A transverse lung CT scan of a lung with {condition}"
         return latent, prompt
 
 class ControlNetLatentDataset(Dataset):
@@ -99,7 +99,7 @@ class ControlNetLatentDataset(Dataset):
 
         self.mask_transform = transforms.Compose([
             transforms.ToTensor(),
-            transforms.Resize((32, 32), antialias=True)
+            transforms.Resize((256, 256), antialias=True)
         ])
 
     def __len__(self):
@@ -131,9 +131,6 @@ class ControlNetLatentDataset(Dataset):
             return None
         mask_tensor = self.mask_transform(mask_img)
 
-        # --- FIX: Repeat the single mask channel 3 times ---
-        mask_tensor = mask_tensor.repeat(3, 1, 1)
-
-        prompt = f"A transverse lung CT scan of a {condition} lung, slice {slice_num}"
+        prompt = f"A transverse lung CT scan of a lung with {condition}"
         
         return latent, mask_tensor, prompt

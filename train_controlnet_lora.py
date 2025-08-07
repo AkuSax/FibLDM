@@ -38,6 +38,10 @@ def main():
     parser.add_argument("--log_every_steps", type=int, default=100, help="Log training loss every N steps.")
     args = parser.parse_args()
 
+    torch.backends.cudnn.benchmark = True
+    torch.backends.cuda.matmul.allow_tf32 = True
+    torch.backends.cudnn.allow_tf32 = True
+
     project_config = ProjectConfiguration(project_dir=args.output_dir, logging_dir=os.path.join(args.output_dir, "logs"))
     accelerator = Accelerator(mixed_precision="fp16", log_with="wandb", project_config=project_config)
     accelerator.init_trackers("controlnet-lora-ct-scan", config=vars(args))
@@ -47,7 +51,7 @@ def main():
     text_encoder = CLIPTextModel.from_pretrained(model_id, subfolder="text_encoder")
     unet = UNet2DConditionModel.from_pretrained(model_id, subfolder="unet")
     vae = AutoencoderKL.from_pretrained(args.vae_model_path)
-    controlnet = ControlNetModel.from_unet(unet)
+    controlnet = ControlNetModel.from_unet(unet, conditioning_channels=1)
 
     lora_config = LoraConfig(r=args.lora_rank, lora_alpha=args.lora_rank, target_modules=["to_k", "to_q", "to_v", "to_out.0"])
     unet = get_peft_model(unet, lora_config)
@@ -106,8 +110,7 @@ def main():
             accelerator.backward(loss)
 
             if accelerator.sync_gradients:
-                params_to_clip = list(accelerator.unwrap_model(controlnet).parameters()) + list(accelerator.unwrap_model(unet).parameters())
-                grad_norm = torch.nn.utils.clip_grad_norm_(params_to_clip, 1.0)
+                grad_norm = accelerator.clip_grad_norm_(params_to_train, 1.0)
                 accelerator.log({"gradient_norm": grad_norm.item()}, step=global_step)
 
             optimizer.step()
@@ -170,12 +173,9 @@ def main():
                         latents = noise_scheduler.step(noise_pred, t, latents).prev_sample
 
                     images = vae.module.decode(latents / vae.module.config.scaling_factor).sample
-                    
-                    masks_vis = F.interpolate(sample_masks, size=(256, 256), mode='nearest')
-                    
+                    masks_vis = F.interpolate(sample_masks, size=(256, 256), mode='nearest').repeat(1, 3, 1, 1)
                     grid = make_grid(torch.cat([(images / 2 + 0.5).clamp(0, 1), masks_vis]), nrow=num_samples)
                     
-                    # Save the grid to a file
                     samples_dir = os.path.join(args.output_dir, "samples")
                     os.makedirs(samples_dir, exist_ok=True)
                     save_image(grid, os.path.join(samples_dir, f"epoch_{epoch+1:04d}.png"))
