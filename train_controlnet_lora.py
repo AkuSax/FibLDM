@@ -4,7 +4,7 @@ import argparse
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.utils.data import DataLoader, random_split
+from torch.utils.data import DataLoader, random_split, Subset
 from diffusers import UNet2DConditionModel, DDPMScheduler, AutoencoderKL, ControlNetModel
 from transformers import CLIPTextModel, CLIPTokenizer
 from peft import LoraConfig, get_peft_model
@@ -13,6 +13,8 @@ from accelerate import Accelerator
 from accelerate.utils import ProjectConfiguration
 from torchvision.utils import make_grid, save_image
 import wandb
+import random
+import multiprocessing as mp
 
 from dataset import ControlNetLatentDataset
 
@@ -36,8 +38,11 @@ def main():
     parser.add_argument("--num_dataloader_workers", type=int, default=16)
     parser.add_argument("--log_every_epochs", type=int, default=1, help="Generate sample images every N epochs.")
     parser.add_argument("--log_every_steps", type=int, default=100, help="Log training loss every N steps.")
+    parser.add_argument("--subset_fraction", type=float, default=None, help="Use only a fraction of the dataset for quick testing.")
     args = parser.parse_args()
 
+    mp.set_start_method("spawn", force=True)
+    
     torch.backends.cudnn.benchmark = True
     torch.backends.cuda.matmul.allow_tf32 = True
     torch.backends.cudnn.allow_tf32 = True
@@ -57,6 +62,15 @@ def main():
     unet = get_peft_model(unet, lora_config)
     
     full_dataset = ControlNetLatentDataset(data_dir=args.data_dir, manifest_file='manifest_controlnet_balanced.csv')
+    
+    if args.subset_fraction:
+        if accelerator.is_main_process:
+            print(f"Using a {args.subset_fraction*100:.1f}% subset of the data.")
+        subset_size = int(len(full_dataset) * args.subset_fraction)
+        indices = list(range(len(full_dataset)))
+        random.shuffle(indices)
+        full_dataset = Subset(full_dataset, indices[:subset_size])
+    
     train_size = int(0.95 * len(full_dataset))
     val_size = len(full_dataset) - train_size
     train_dataset, val_dataset = random_split(full_dataset, [train_size, val_size])
@@ -165,14 +179,16 @@ def main():
                     text_inputs = tokenizer(prompts, padding="max_length", max_length=tokenizer.model_max_length, return_tensors="pt")
                     encoder_hidden_states = text_encoder(text_inputs.input_ids.to(accelerator.device))[0]
                     
-                    latents = torch.randn(num_samples, unet.module.config.in_channels, 32, 32, device=accelerator.device)
+                    unwrapped_unet = accelerator.unwrap_model(unet)
+                    latents = torch.randn(num_samples, unwrapped_unet.config.in_channels, 32, 32, device=accelerator.device)
                     
                     for t in tqdm(noise_scheduler.timesteps, desc="Generating Samples"):
                         down_block_res_samples, mid_block_res_sample = controlnet(latents, t, encoder_hidden_states=encoder_hidden_states, controlnet_cond=sample_masks, return_dict=False)
                         noise_pred = unet(latents, t, encoder_hidden_states=encoder_hidden_states, down_block_additional_residuals=down_block_res_samples, mid_block_additional_residual=mid_block_res_sample).sample
                         latents = noise_scheduler.step(noise_pred, t, latents).prev_sample
 
-                    images = vae.module.decode(latents / vae.module.config.scaling_factor).sample
+                    unwrapped_vae = accelerator.unwrap_model(vae)
+                    images = unwrapped_vae.decode(latents / unwrapped_vae.config.scaling_factor).sample
                     masks_vis = F.interpolate(sample_masks, size=(256, 256), mode='nearest').repeat(1, 3, 1, 1)
                     grid = make_grid(torch.cat([(images / 2 + 0.5).clamp(0, 1), masks_vis]), nrow=num_samples)
                     

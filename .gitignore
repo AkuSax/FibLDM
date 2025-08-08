@@ -25,4 +25,5 @@ scripts/test_vae_metrics.py
 scripts/test_vae_reconstruction.py
 scripts/train_controlnet.sh
 scripts/train_ldm_unet.sh
+wandb/
 *.log

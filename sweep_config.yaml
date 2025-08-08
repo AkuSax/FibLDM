@@ -1,0 +1,24 @@
+program: train_controlnet_lora.py
+method: grid
+metric:
+  goal: minimize
+  name: avg_val_loss
+parameters:
+  learning_rate:
+    values: [1e-4, 5e-5]
+  lora_rank:
+    values: [8, 16, 32, 64]
+  subset_fraction:
+    value: 0.05
+  data_dir:
+    value: "/hot/Yi-Kuan/Fibrosis/Akul/sd_data"
+  vae_model_path:
+    value: "model_runs/vae_run_2/best_model_hf"
+  output_dir:
+    value: "model_runs/lora_run_4"
+  num_train_epochs:
+    value: 50
+  train_batch_size:
+    value: 16
+  num_dataloader_workers:
+    value: 8
