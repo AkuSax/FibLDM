@@ -2,7 +2,7 @@
 
 ---
 
-**FibLDM** is a project focused on generating high-quality, 2D transverse lung CT scans, particularly those exhibiting features of fibrosis. This repository is currently under active development.
+**FibLDM** is a project focused on generating high-quality, 2D axial lung CT scans, particularly those exhibiting features of fibrosis. This repository is currently under active development.
 
 ### Project Overview
 The primary goal of **FibLDM** is to create a robust generative model for medical imaging. We are leveraging a pre-trained **Stable Diffusion (v1.5)** model and adapting its U-Net component to our domain of medical imaging using **Low-Rank Adaptation (LoRA)**. This allows for efficient training on a custom dataset of latent representations of lung CT scans. The project utilizes modern deep learning libraries, including Hugging Face's `diffusers` and `peft`.
