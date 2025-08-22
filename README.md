@@ -1,5 +1,7 @@
 # FibLDM: Fine-Tuning Stable Diffusion for 2D Lung CT Scan Generation
 
+<img width="1062" height="532" alt="image" src="https://github.com/user-attachments/assets/7825a26e-5d16-46f7-abd6-1700abd11023" />
+
 ---
 
 **FibLDM** is a project focused on generating high-quality, 2D axial lung CT scans, particularly those exhibiting features of fibrosis. This repository is currently under active development.
