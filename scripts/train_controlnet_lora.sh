@@ -1,8 +1,8 @@
 #!/bin/bash
 
-export DATA_DIR="/hot/Yi-Kuan/Fibrosis/Akul/sd_data"
-export VAE_PATH="../model_runs/vae_run_2/best_model_hf" 
-export OUTPUT_DIR="../model_runs/lora_run_3"
+export DATA_DIR="/mnt/hot/public/Yi-Kuan/Fibrosis/Akul/sd_data"
+export VAE_PATH="../model_runs/vae_run_3/best_model" 
+export OUTPUT_DIR="../model_runs/lora_run_5"
 
 mkdir -p $OUTPUT_DIR
 
