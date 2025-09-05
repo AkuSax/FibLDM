@@ -92,11 +92,12 @@ def main():
     model_id = "runwayml/stable-diffusion-v1-5"
     tokenizer = CLIPTokenizer.from_pretrained(model_id, subfolder="tokenizer")
     text_encoder = CLIPTextModel.from_pretrained(model_id, subfolder="text_encoder")
+    noise_scheduler = DDPMScheduler.from_pretrained(model_id, subfolder="scheduler")
     vae = AutoencoderKL.from_pretrained(args.pretrained_vae_path)
     controlnet = ControlNetModel.from_pretrained(args.pretrained_controlnet_path)
     unet = UNet2DConditionModel.from_pretrained(model_id, subfolder="unet")
     unet = PeftModel.from_pretrained(unet, args.pretrained_model_path)
-    noise_scheduler = DDPMScheduler.from_pretrained(model_id, subfolder="scheduler")
+
 
     tokenizer.add_tokens("<fibrosis-texture>")
     text_encoder.resize_token_embeddings(len(tokenizer))
